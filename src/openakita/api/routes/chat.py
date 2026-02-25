@@ -35,6 +35,52 @@ def _is_multi_agent_enabled() -> bool:
     return settings.multi_agent_enabled
 
 
+def _resolve_profile(agent_profile_id: str | None):
+    """Resolve an AgentProfile by id, falling back to 'default'."""
+    from openakita.agents.presets import SYSTEM_PRESETS
+    from openakita.agents.profile import AgentProfile, ProfileStore
+    from openakita.config import settings
+
+    pid = agent_profile_id or "default"
+
+    for p in SYSTEM_PRESETS:
+        if p.id == pid:
+            return p
+
+    try:
+        store = ProfileStore(settings.data_dir / "agents")
+        profile = store.get(pid)
+        if profile:
+            return profile
+    except Exception:
+        pass
+
+    for p in SYSTEM_PRESETS:
+        if p.id == "default":
+            return p
+
+    return AgentProfile(id="default", name="Default Agent")
+
+
+async def _get_agent_for_session(request: Request, conversation_id: str, agent_profile_id: str | None = None):
+    """Get a per-session Agent from pool, or fallback to global agent."""
+    pool = getattr(request.app.state, "agent_pool", None)
+    if pool is not None and conversation_id:
+        profile = _resolve_profile(agent_profile_id)
+        return await pool.get_or_create(conversation_id, profile)
+    return getattr(request.app.state, "agent", None)
+
+
+def _get_existing_agent(request: Request, conversation_id: str | None):
+    """Get the existing Agent for a session (no creation). For control ops."""
+    pool = getattr(request.app.state, "agent_pool", None)
+    if pool is not None and conversation_id:
+        agent = pool.get_existing(conversation_id)
+        if agent is not None:
+            return agent
+    return getattr(request.app.state, "agent", None)
+
+
 def _apply_agent_profile(session: object, new_profile_id: str) -> bool:
     """Store agent_profile_id in session context and record the switch.
 
@@ -353,6 +399,9 @@ async def chat(request: Request, body: ChatRequest):
     Uses the full Agent pipeline (shared with IM/CLI channels)
     via Agent.chat_with_session_stream().
 
+    Each conversation gets its own Agent instance via AgentInstancePool
+    to support concurrent streaming without shared-state corruption.
+
     Returns Server-Sent Events with the following event types:
     - thinking_start / thinking_delta / thinking_end
     - text_delta
@@ -364,7 +413,9 @@ async def chat(request: Request, body: ChatRequest):
     - error
     - done
     """
-    agent = getattr(request.app.state, "agent", None)
+    import uuid as _uuid
+    conversation_id = body.conversation_id or f"api_{_uuid.uuid4().hex[:12]}"
+    agent = await _get_agent_for_session(request, conversation_id, body.agent_profile_id)
     session_manager = getattr(request.app.state, "session_manager", None)
 
     msg_preview = (body.message or "")[:100]
@@ -376,8 +427,11 @@ async def chat(request: Request, body: ChatRequest):
         + (" | plan_mode" if body.plan_mode else "")
         + (f" | thinking={body.thinking_mode}" if body.thinking_mode else "")
         + (f" | depth={body.thinking_depth}" if body.thinking_depth else "")
-        + (f" | conv={body.conversation_id}" if body.conversation_id else "")
+        + (f" | conv={conversation_id}")
     )
+
+    # Pass pre-resolved conversation_id so _stream_chat doesn't generate a new one
+    body.conversation_id = conversation_id
 
     return StreamingResponse(
         _stream_chat(body, agent, session_manager, http_request=request),
@@ -403,15 +457,16 @@ async def chat_answer(request: Request, body: ChatAnswerRequest):
 
 @router.post("/api/chat/cancel")
 async def chat_cancel(request: Request, body: ChatControlRequest):
-    """Cancel the current running task globally."""
-    agent = getattr(request.app.state, "agent", None)
+    """Cancel the current running task for the specified conversation."""
+    conv_id = body.conversation_id
+    agent = _get_existing_agent(request, conv_id)
     actual_agent = _resolve_agent(agent) if agent else None
     if actual_agent is None:
         logger.warning("[Chat API] Cancel failed: Agent not initialized")
         return {"status": "error", "message": "Agent not initialized"}
 
     reason = body.reason or "用户从聊天界面取消任务"
-    _conv_id = body.conversation_id or getattr(actual_agent, "_current_conversation_id", None)
+    _conv_id = conv_id or getattr(actual_agent, "_current_conversation_id", None)
     logger.info(f"[Chat API] Cancel 接收到请求: reason={reason!r}, conv_id={_conv_id!r}")
     actual_agent.cancel_current_task(reason, session_id=_conv_id)
     logger.info(f"[Chat API] Cancel 执行完成: reason={reason!r}")
@@ -421,13 +476,14 @@ async def chat_cancel(request: Request, body: ChatControlRequest):
 @router.post("/api/chat/skip")
 async def chat_skip(request: Request, body: ChatControlRequest):
     """Skip the current running tool/step (does not terminate the task)."""
-    agent = getattr(request.app.state, "agent", None)
+    conv_id = body.conversation_id
+    agent = _get_existing_agent(request, conv_id)
     actual_agent = _resolve_agent(agent) if agent else None
     if actual_agent is None:
         return {"status": "error", "message": "Agent not initialized"}
 
     reason = body.reason or "用户从聊天界面跳过当前步骤"
-    _conv_id = body.conversation_id or getattr(actual_agent, "_current_conversation_id", None)
+    _conv_id = conv_id or getattr(actual_agent, "_current_conversation_id", None)
     actual_agent.skip_current_step(reason, session_id=_conv_id)
     logger.info(f"[Chat API] Skip requested: reason={reason!r}, conv_id={_conv_id!r}")
     return {"status": "ok", "action": "skip", "reason": reason}
@@ -440,7 +496,8 @@ async def chat_insert(request: Request, body: ChatControlRequest):
     Smart routing: if the message is a stop/skip command, automatically
     delegate to cancel/skip instead of blindly inserting.
     """
-    agent = getattr(request.app.state, "agent", None)
+    conv_id = body.conversation_id
+    agent = _get_existing_agent(request, conv_id)
     actual_agent = _resolve_agent(agent) if agent else None
     if actual_agent is None:
         logger.warning("[Chat API] Insert failed: Agent not initialized")
@@ -455,7 +512,7 @@ async def chat_insert(request: Request, body: ChatControlRequest):
 
     if msg_type == "stop":
         reason = f"用户发送停止指令: {body.message}"
-        _conv_id = body.conversation_id or getattr(actual_agent, "_current_conversation_id", None)
+        _conv_id = conv_id or getattr(actual_agent, "_current_conversation_id", None)
         logger.info(f"[Chat API] Insert -> STOP: reason={reason!r}, conv_id={_conv_id!r}")
         actual_agent.cancel_current_task(reason, session_id=_conv_id)
         logger.info(f"[Chat API] Insert -> STOP 执行完成")
@@ -463,16 +520,29 @@ async def chat_insert(request: Request, body: ChatControlRequest):
 
     if msg_type == "skip":
         reason = f"用户发送跳过指令: {body.message}"
-        _skip_conv_id = body.conversation_id or getattr(actual_agent, "_current_conversation_id", None)
+        _skip_conv_id = conv_id or getattr(actual_agent, "_current_conversation_id", None)
         ok = actual_agent.skip_current_step(reason, session_id=_skip_conv_id)
         logger.info(f"[Chat API] Insert -> SKIP: reason={reason!r}, ok={ok}")
         if not ok:
             return {"status": "warning", "action": "skip", "reason": reason, "message": "No active task to skip"}
         return {"status": "ok", "action": "skip", "reason": reason}
 
-    _insert_conv_id = body.conversation_id or getattr(actual_agent, "_current_conversation_id", None)
+    _insert_conv_id = conv_id or getattr(actual_agent, "_current_conversation_id", None)
     ok = await actual_agent.insert_user_message(body.message, session_id=_insert_conv_id)
     logger.info(f"[Chat API] Insert 作为普通消息: ok={ok}, message={body.message[:60]!r}")
     if not ok:
         return {"status": "warning", "action": "insert", "message": "No active task, message dropped"}
     return {"status": "ok", "action": "insert", "message": body.message[:100]}
+
+
+@router.get("/api/agents/sub-tasks")
+async def get_sub_agent_tasks(request: Request, conversation_id: str = ""):
+    """Return live sub-agent states for a given conversation (polling endpoint)."""
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None or not conversation_id:
+        return []
+    try:
+        return orchestrator.get_sub_agent_states(conversation_id)
+    except Exception as e:
+        logger.warning(f"[Chat API] sub-tasks query error: {e}")
+        return []

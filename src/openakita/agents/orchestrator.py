@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_DELEGATION_DEPTH = 5
-CHECK_INTERVAL = 10.0   # how often to poll progress
+CHECK_INTERVAL = 3.0    # how often to poll progress (matches frontend polling)
 
 # Defaults — overridden at runtime by settings when available
 _DEFAULT_IDLE_TIMEOUT = 1200.0
@@ -106,6 +106,11 @@ class AgentOrchestrator:
 
         # Delegation log directory (fixed path for easy debugging)
         self._log_dir: Path | None = None
+
+        # Live sub-agent states for frontend polling
+        # Key: "{session_id}:{agent_profile_id}", Value: state dict
+        self._sub_agent_states: dict[str, dict] = {}
+        self._sub_cleanup_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # External wiring
@@ -374,12 +379,25 @@ class AgentOrchestrator:
         last_fingerprint: tuple[int, str, int] = (-1, "", 0)
         last_progress_time = start
 
+        state_key = f"{session.id}:{agent_profile_id}"
+        self._sub_agent_states[state_key] = {
+            "agent_id": agent_profile_id,
+            "profile_id": profile.id,
+            "session_id": str(session.id),
+            "status": "starting",
+            "iteration": 0,
+            "tools_executed": [],
+            "tools_total": 0,
+            "elapsed_s": 0,
+            "last_progress_s": 0,
+            "started_at": time.time(),
+        }
+
         try:
             while not task.done():
                 await asyncio.sleep(CHECK_INTERVAL)
                 elapsed = time.monotonic() - start
 
-                # Hard cap — only when explicitly configured (> 0)
                 if hard_timeout > 0 and elapsed >= hard_timeout:
                     logger.warning(
                         f"[Orchestrator] Agent {agent_profile_id} hit hard cap "
@@ -391,6 +409,7 @@ class AgentOrchestrator:
                         await task
                     except (asyncio.CancelledError, Exception):
                         pass
+                    self._update_sub_state(state_key, "timeout", elapsed)
                     raise asyncio.TimeoutError()
 
                 fp = self._get_progress_fingerprint(agent, session.id)
@@ -412,11 +431,23 @@ class AgentOrchestrator:
                         "elapsed_s": round(elapsed),
                     })
 
-                idle = time.monotonic() - last_progress_time
-                if idle >= idle_timeout:
+                # Update live sub-agent state for frontend polling
+                tools_list = self._get_tools_executed(agent, session.id)
+                idle_s = time.monotonic() - last_progress_time
+                self._sub_agent_states[state_key] = {
+                    **self._sub_agent_states.get(state_key, {}),
+                    "status": "running",
+                    "iteration": fp[0] if fp[0] >= 0 else 0,
+                    "tools_executed": tools_list[-5:],
+                    "tools_total": len(tools_list),
+                    "elapsed_s": round(elapsed),
+                    "last_progress_s": round(idle_s),
+                }
+
+                if idle_s >= idle_timeout:
                     logger.warning(
                         f"[Orchestrator] Agent {agent_profile_id} idle for "
-                        f"{idle:.0f}s with no progress "
+                        f"{idle_s:.0f}s with no progress "
                         f"(last fingerprint: iter={last_fingerprint[0]}, "
                         f"status={last_fingerprint[1]}, tools={last_fingerprint[2]}). "
                         f"Killing. Adjust settings.progress_timeout_seconds to change threshold."
@@ -426,8 +457,10 @@ class AgentOrchestrator:
                         await task
                     except (asyncio.CancelledError, Exception):
                         pass
+                    self._update_sub_state(state_key, "timeout", elapsed)
                     raise asyncio.TimeoutError()
 
+            self._update_sub_state(state_key, "completed", time.monotonic() - start)
             return task.result()
         except asyncio.CancelledError:
             if not task.done():
@@ -436,7 +469,66 @@ class AgentOrchestrator:
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            self._update_sub_state(state_key, "cancelled", time.monotonic() - start)
             raise
+
+    def _update_sub_state(self, key: str, status: str, elapsed: float) -> None:
+        """Update a sub-agent's terminal state and schedule cleanup."""
+        if key in self._sub_agent_states:
+            self._sub_agent_states[key]["status"] = status
+            self._sub_agent_states[key]["elapsed_s"] = round(elapsed)
+
+        async def _delayed_cleanup() -> None:
+            await asyncio.sleep(30)
+            self._sub_agent_states.pop(key, None)
+            self._sub_cleanup_tasks.pop(key, None)
+
+        old_task = self._sub_cleanup_tasks.pop(key, None)
+        if old_task and not old_task.done():
+            old_task.cancel()
+        try:
+            self._sub_cleanup_tasks[key] = asyncio.create_task(_delayed_cleanup())
+        except RuntimeError:
+            self._sub_agent_states.pop(key, None)
+
+    @staticmethod
+    def _get_tools_executed(agent: Any, session_id: str) -> list[str]:
+        """Return the list of tool names executed by the agent in the current task."""
+        state = getattr(agent, "agent_state", None)
+        if state is None:
+            return []
+        task = state.get_task_for_session(session_id)
+        if task is None:
+            task = state.current_task
+        if task is None:
+            return []
+        return list(task.tools_executed) if task.tools_executed else []
+
+    def get_sub_agent_states(self, session_id: str) -> list[dict]:
+        """Return live sub-agent states for the given conversation (session.id).
+
+        Used by the frontend polling endpoint to display progress cards.
+        """
+        result = []
+        prefix = f"{session_id}:"
+        for key, state in list(self._sub_agent_states.items()):
+            if key.startswith(prefix):
+                entry = dict(state)
+                # Attach profile display info
+                profile_id = entry.get("profile_id", "")
+                if self._profile_store:
+                    profile = self._profile_store.get(profile_id)
+                    if profile:
+                        entry["name"] = profile.get_display_name()
+                        entry["icon"] = profile.icon or "🤖"
+                    else:
+                        entry.setdefault("name", profile_id)
+                        entry.setdefault("icon", "🤖")
+                else:
+                    entry.setdefault("name", profile_id)
+                    entry.setdefault("icon", "🤖")
+                result.append(entry)
+        return result
 
     @staticmethod
     def _get_progress_fingerprint(agent: Any, session_id: str) -> tuple[int, str, int]:

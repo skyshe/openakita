@@ -59,6 +59,8 @@ def create_app(
     shutdown_event: asyncio.Event | None = None,
     session_manager: Any = None,
     gateway: Any = None,
+    orchestrator: Any = None,
+    agent_pool: Any = None,
 ) -> FastAPI:
     """Create the FastAPI application with all routes mounted."""
 
@@ -83,6 +85,8 @@ def create_app(
     app.state.shutdown_event = shutdown_event
     app.state.session_manager = session_manager
     app.state.gateway = gateway
+    app.state.orchestrator = orchestrator
+    app.state.agent_pool = agent_pool
 
     # Mount routes
     app.include_router(agents.router)
@@ -133,6 +137,8 @@ async def start_api_server(
     shutdown_event: asyncio.Event | None = None,
     session_manager: Any = None,
     gateway: Any = None,
+    orchestrator: Any = None,
+    agent_pool: Any = None,
     host: str = API_HOST,
     port: int = API_PORT,
     max_retries: int = 5,
@@ -162,7 +168,7 @@ async def start_api_server(
             )
         logger.info(f"Port {port} is now available")
 
-    app = create_app(agent=agent, shutdown_event=shutdown_event, session_manager=session_manager, gateway=gateway)
+    app = create_app(agent=agent, shutdown_event=shutdown_event, session_manager=session_manager, gateway=gateway, orchestrator=orchestrator, agent_pool=agent_pool)
 
     server_started = asyncio.Event()
     server_error: list[Exception] = []

@@ -185,6 +185,19 @@ class AgentInstancePool:
 
         return agent
 
+    def get_existing(self, session_id: str) -> Agent | None:
+        """Return an existing Agent for *session_id* without creating a new one.
+
+        Used by control endpoints (cancel / skip / insert) that must operate
+        on the exact agent instance that is currently handling a conversation.
+        """
+        with self._lock:
+            entry = self._pool.get(session_id)
+            if entry:
+                entry.touch()
+                return entry.agent
+        return None
+
     def release(self, session_id: str) -> None:
         """标记会话结束，实例进入空闲等待回收"""
         with self._lock:

@@ -124,7 +124,17 @@
     "downloadImage": "保存图片",
     "agentDefault": "默认 Agent",
     "agentSelect": "选择 Agent",
-    "agentSwitched": "已切换到 Agent"
+    "agentSwitched": "已切换到 Agent",
+    "subAgentPanel": "子 Agent 进度",
+    "subAgentStarting": "启动中",
+    "subAgentRunning": "执行中",
+    "subAgentDone": "已完成",
+    "subAgentError": "出错",
+    "subAgentTimeout": "超时",
+    "subAgentCancelled": "已取消",
+    "subAgentIter": "迭代",
+    "subAgentElapsed": "耗时",
+    "subAgentTools": "工具"
   },
   "skills": {
     "title": "技能管理",

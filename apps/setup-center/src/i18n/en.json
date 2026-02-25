@@ -124,7 +124,17 @@
     "downloadImage": "Save image",
     "agentDefault": "Default Agent",
     "agentSelect": "Select Agent",
-    "agentSwitched": "Agent switched to"
+    "agentSwitched": "Agent switched to",
+    "subAgentPanel": "Sub-Agent Progress",
+    "subAgentStarting": "Starting",
+    "subAgentRunning": "Running",
+    "subAgentDone": "Completed",
+    "subAgentError": "Error",
+    "subAgentTimeout": "Timeout",
+    "subAgentCancelled": "Cancelled",
+    "subAgentIter": "Iter",
+    "subAgentElapsed": "Elapsed",
+    "subAgentTools": "Tools"
   },
   "skills": {
     "title": "Skill Manager",

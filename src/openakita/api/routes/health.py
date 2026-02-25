@@ -93,6 +93,17 @@ async def _check_with_timeout(name: str, provider, timeout: float = 30) -> Healt
         )
 
 
+@router.get("/api/debug/pool-stats")
+async def pool_stats(request: Request):
+    """Diagnostic: return AgentInstancePool statistics."""
+    pool = getattr(request.app.state, "agent_pool", None)
+    if pool is None:
+        return {"error": "AgentInstancePool not available", "pool_enabled": False}
+    stats = pool.get_stats()
+    stats["pool_enabled"] = True
+    return stats
+
+
 @router.post("/api/health/check")
 async def health_check(request: Request, body: HealthCheckRequest):
     """

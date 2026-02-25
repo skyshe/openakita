@@ -68,6 +68,7 @@ console = Console()
 # 全局组件
 _agent: Agent | None = None
 _orchestrator = None  # AgentOrchestrator（多 Agent 模式）
+_desktop_pool = None  # AgentInstancePool — Desktop Chat per-session 隔离
 _message_gateway = None
 _session_manager = None
 
@@ -344,6 +345,13 @@ async def start_im_channels(agent_or_master):
         except Exception as e:
             logger.warning(f"[Main] Failed to deploy presets: {e}")
 
+    # Desktop Chat per-session Agent pool (always initialized for concurrent streaming)
+    global _desktop_pool
+    from openakita.agents.factory import AgentFactory, AgentInstancePool
+    _desktop_pool = AgentInstancePool(AgentFactory(), idle_timeout=600)
+    await _desktop_pool.start()
+    logger.info("[Main] Desktop AgentInstancePool initialized (idle_timeout=600s)")
+
     # 注册启用的适配器
     adapters_started = []
 
@@ -530,7 +538,14 @@ async def stop_im_channels(*, graceful: bool = True, drain_timeout: float = 30.0
         graceful: True 时先排空进行中任务再停止，False 时立即停止
         drain_timeout: 排空等待超时秒数
     """
-    global _message_gateway, _session_manager, _orchestrator
+    global _message_gateway, _session_manager, _orchestrator, _desktop_pool
+
+    if _desktop_pool:
+        try:
+            await _desktop_pool.stop()
+        except Exception as e:
+            logger.warning(f"Desktop pool shutdown error: {e}")
+        _desktop_pool = None
 
     if _orchestrator:
         try:
@@ -1131,9 +1146,10 @@ def prompt_debug(
 
 def _reset_globals():
     """重置全局组件引用，用于重启时清除旧实例。"""
-    global _agent, _orchestrator, _message_gateway, _session_manager
+    global _agent, _orchestrator, _message_gateway, _session_manager, _desktop_pool
     _agent = None
     _orchestrator = None
+    _desktop_pool = None
     _message_gateway = None
     _session_manager = None
 
@@ -1283,6 +1299,8 @@ def serve():
                 shutdown_event=shutdown_event,
                 session_manager=_session_manager,
                 gateway=_message_gateway,
+                orchestrator=_orchestrator,
+                agent_pool=_desktop_pool,
             )
             console.print("[green]✓[/green] HTTP API 已启动: http://127.0.0.1:18900")
             _heartbeat_phase = "running"
