@@ -249,6 +249,12 @@ class Settings(BaseSettings):
         description="适应期内记忆整理间隔（小时，默认 3 小时）",
     )
 
+    # === 群聊响应策略 ===
+    group_response_mode: str = Field(
+        default="mention_only",
+        description="群聊响应模式: always(全响应) / mention_only(仅@时响应，默认) / smart(AI判断)",
+    )
+
     # === 通道配置 ===
     # Telegram
     telegram_enabled: bool = Field(default=False, description="是否启用 Telegram")
@@ -301,7 +307,16 @@ class Settings(BaseSettings):
     session_max_history: int = Field(default=50, description="会话最大历史消息数")
     session_storage_path: str = Field(default="data/sessions", description="会话存储路径")
 
-    # === 多 Agent 协同配置 ===
+    # === 多 Agent 模式 (Beta) ===
+    multi_agent_enabled: bool = Field(
+        default=False,
+        description="多Agent模式 (Beta)，开启后支持多Agent协作、专用Agent、IM多Bot等",
+    )
+
+    # IM 多 Bot 配置（多Agent模式下支持同一通道类型多个Bot实例）
+    im_bots: list[dict] = Field(default_factory=list)
+
+    # === 多 Agent 协同配置 (旧 ZMQ, deprecated) ===
     orchestration_enabled: bool = Field(default=False, description="是否启用多 Agent 协同")
     orchestration_mode: str = Field(
         default="single",
@@ -357,7 +372,7 @@ class Settings(BaseSettings):
 
     # === Bug Report 配置 ===
     bug_report_endpoint: str = Field(
-        default="https://bug-report-worker.zacon365.workers.dev",
+        default="https://feedback.openakita.ai",
         description="Bug report cloud endpoint URL (Cloudflare Worker). Empty = feature disabled.",
     )
 
@@ -473,6 +488,11 @@ class Settings(BaseSettings):
         return self.project_root / "specs"
 
     @property
+    def data_dir(self) -> Path:
+        """数据存储目录 (project_root/data)"""
+        return self.project_root / "data"
+
+    @property
     def db_full_path(self) -> Path:
         """数据库完整路径"""
         return self.project_root / self.database_path
@@ -541,6 +561,8 @@ _PERSISTABLE_KEYS: list[str] = [
     "proactive_quiet_hours_end",
     "ui_theme",
     "ui_language",
+    "multi_agent_enabled",
+    "im_bots",
 ]
 
 
