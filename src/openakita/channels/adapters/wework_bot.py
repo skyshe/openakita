@@ -351,8 +351,12 @@ class WeWorkBotAdapter(ChannelAdapter):
         callback_port: int = 9880,
         callback_host: str = "0.0.0.0",
         media_dir: Path | None = None,
+        *,
+        channel_name: str | None = None,
+        bot_id: str | None = None,
+        agent_profile_id: str = "default",
     ):
-        super().__init__()
+        super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
         self.config = WeWorkBotConfig(
             corp_id=corp_id,
@@ -830,6 +834,13 @@ class WeWorkBotAdapter(ChannelAdapter):
             if quote_text:
                 text_content = f"[引用: {quote_text}]\n{text_content}"
 
+        # 检测 @机器人（在去除 mention 之前检测）
+        is_mentioned = bool(
+            msg_data.get("chattype") == "group"
+            and re.match(r"^@\S+", text_content)
+        )
+        is_direct_message = chat_type == "private"
+
         # 群聊中去除 @机器人 的 mention
         if msg_data.get("chattype") == "group":
             text_content = re.sub(r"^@\S+\s*", "", text_content).strip()
@@ -844,6 +855,8 @@ class WeWorkBotAdapter(ChannelAdapter):
             chat_id=chat_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=msg_data,
         )
 
@@ -872,6 +885,9 @@ class WeWorkBotAdapter(ChannelAdapter):
 
         content = MessageContent(images=[media])
 
+        is_direct_message = chat_type == "private"
+        is_mentioned = msg_data.get("chattype") == "group"
+
         unified = UnifiedMessage.create(
             channel=self.channel_name,
             channel_message_id=msgid,
@@ -880,6 +896,8 @@ class WeWorkBotAdapter(ChannelAdapter):
             chat_id=chat_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=msg_data,
         )
 
@@ -922,8 +940,16 @@ class WeWorkBotAdapter(ChannelAdapter):
             if quote_text:
                 text_parts.insert(0, f"[引用: {quote_text}]")
 
-        # 群聊去除 @mention
+        # 检测 @机器人（在去除 mention 之前检测）
         combined_text = "\n".join(text_parts) if text_parts else None
+        is_mentioned = bool(
+            msg_data.get("chattype") == "group"
+            and combined_text
+            and re.match(r"^@\S+", combined_text)
+        )
+        is_direct_message = chat_type == "private"
+
+        # 群聊去除 @mention
         if combined_text and msg_data.get("chattype") == "group":
             combined_text = re.sub(r"^@\S+\s*", "", combined_text).strip()
 
@@ -940,6 +966,8 @@ class WeWorkBotAdapter(ChannelAdapter):
             chat_id=chat_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=msg_data,
         )
 
@@ -968,6 +996,9 @@ class WeWorkBotAdapter(ChannelAdapter):
         else:
             content = MessageContent(text="[语音消息，无法识别]")
 
+        is_direct_message = chat_type == "private"
+        is_mentioned = msg_data.get("chattype") == "group"
+
         unified = UnifiedMessage.create(
             channel=self.channel_name,
             channel_message_id=msgid,
@@ -976,6 +1007,8 @@ class WeWorkBotAdapter(ChannelAdapter):
             chat_id=chat_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=msg_data,
         )
 
@@ -1004,6 +1037,9 @@ class WeWorkBotAdapter(ChannelAdapter):
 
         content = MessageContent(files=[media])
 
+        is_direct_message = chat_type == "private"
+        is_mentioned = msg_data.get("chattype") == "group"
+
         unified = UnifiedMessage.create(
             channel=self.channel_name,
             channel_message_id=msgid,
@@ -1012,6 +1048,8 @@ class WeWorkBotAdapter(ChannelAdapter):
             chat_id=chat_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=msg_data,
         )
 

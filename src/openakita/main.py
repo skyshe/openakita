@@ -67,7 +67,8 @@ console = Console()
 
 # 全局组件
 _agent: Agent | None = None
-_master_agent = None  # MasterAgent（多 Agent 协同模式）
+_master_agent = None  # MasterAgent（多 Agent 协同模式，旧 ZMQ）
+_orchestrator = None  # AgentOrchestrator（新多 Agent 模式，Phase 2 实现）
 _message_gateway = None
 _session_manager = None
 
@@ -101,6 +102,18 @@ def get_master_agent():
             data_dir=settings.project_root / "data",
         )
     return _master_agent
+
+
+async def _init_orchestrator():
+    """Initialize the orchestrator if multi-agent mode is enabled."""
+    global _orchestrator
+    if _orchestrator is not None:
+        return
+    from openakita.agents.orchestrator import AgentOrchestrator
+    _orchestrator = AgentOrchestrator()
+    if _message_gateway:
+        _orchestrator.set_gateway(_message_gateway)
+    logger.info("[MultiAgent] AgentOrchestrator initialized (runtime)")
 
 
 def is_orchestration_enabled() -> bool:
@@ -224,6 +237,62 @@ def _ensure_channel_deps() -> None:
         console.print(f"[red]✗[/red] 依赖安装异常: {e}")
 
 
+def _create_bot_adapter(bot_type: str, creds: dict, *, channel_name: str, bot_id: str, agent_profile_id: str):
+    """Create an IM adapter instance from im_bots config entry."""
+    from .channels.base import ChannelAdapter
+
+    if bot_type == "feishu":
+        from .channels.adapters import FeishuAdapter
+        return FeishuAdapter(
+            app_id=creds.get("app_id", ""),
+            app_secret=creds.get("app_secret", ""),
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+        )
+    elif bot_type == "telegram":
+        from .channels.adapters import TelegramAdapter
+        return TelegramAdapter(
+            bot_token=creds.get("bot_token", ""),
+            webhook_url=creds.get("webhook_url") or None,
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+        )
+    elif bot_type == "dingtalk":
+        from .channels.adapters import DingTalkAdapter
+        return DingTalkAdapter(
+            app_key=creds.get("app_key", creds.get("client_id", "")),
+            app_secret=creds.get("app_secret", creds.get("client_secret", "")),
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+        )
+    elif bot_type == "wework":
+        from .channels.adapters import WeWorkBotAdapter
+        return WeWorkBotAdapter(
+            corp_id=creds.get("corp_id", ""),
+            token=creds.get("token", ""),
+            encoding_aes_key=creds.get("encoding_aes_key", ""),
+            callback_port=int(creds.get("callback_port", 9880)),
+            callback_host=creds.get("callback_host", "0.0.0.0"),
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+        )
+    elif bot_type == "onebot":
+        from .channels.adapters import OneBotAdapter
+        return OneBotAdapter(
+            ws_url=creds.get("ws_url", "ws://127.0.0.1:8080"),
+            access_token=creds.get("access_token") or None,
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+        )
+    elif bot_type == "qqbot":
+        from .channels.adapters import QQBotAdapter
+        return QQBotAdapter(
+            app_id=creds.get("app_id", ""),
+            app_secret=creds.get("app_secret", ""),
+            sandbox=bool(creds.get("sandbox", False)),
+            mode=creds.get("mode", "websocket"),
+            channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id,
+        )
+    else:
+        logger.warning(f"Unknown bot type: {bot_type}")
+        return None
+
+
 async def ensure_session_manager():
     """
     确保 SessionManager 已初始化。
@@ -313,6 +382,20 @@ async def start_im_channels(agent_or_master):
         whisper_language=settings.whisper_language,  # 语音识别语言
         stt_client=stt_client,  # 在线 STT 客户端
     )
+
+    # 初始化 AgentOrchestrator (多 Agent 模式)
+    global _orchestrator
+    if settings.multi_agent_enabled:
+        from openakita.agents.orchestrator import AgentOrchestrator
+        _orchestrator = AgentOrchestrator()
+        _orchestrator.set_gateway(_message_gateway)
+        logger.info("[MultiAgent] AgentOrchestrator initialized")
+        # Deploy system presets on orchestrator initialization
+        try:
+            from openakita.agents.presets import ensure_presets_on_mode_enable
+            ensure_presets_on_mode_enable(settings.data_dir / "agents")
+        except Exception as e:
+            logger.warning(f"[Main] Failed to deploy presets: {e}")
 
     # 注册启用的适配器
     adapters_started = []
@@ -418,6 +501,29 @@ async def start_im_channels(agent_or_master):
         except Exception as e:
             logger.error(f"Failed to start QQ Official Bot adapter: {e}")
 
+    # Multi-bot: create additional adapters from im_bots config
+    if settings.im_bots:
+        for bot_cfg in settings.im_bots:
+            if not bot_cfg.get("enabled", True):
+                continue
+            bot_type = bot_cfg.get("type", "")
+            bot_id = bot_cfg.get("id", "")
+            agent_id = bot_cfg.get("agent_profile_id", "default")
+            creds = bot_cfg.get("credentials", {})
+            _channel_name = f"{bot_type}:{bot_id}" if bot_id else bot_type
+
+            try:
+                adapter = _create_bot_adapter(
+                    bot_type, creds,
+                    channel_name=_channel_name, bot_id=bot_id, agent_profile_id=agent_id,
+                )
+                if adapter:
+                    await _message_gateway.register_adapter(adapter)
+                    adapters_started.append(_channel_name)
+                    logger.info(f"[MultiBot] Registered bot: {_channel_name} -> agent={agent_id}")
+            except Exception as e:
+                logger.error(f"Failed to create bot {bot_id}: {e}")
+
     # 设置 Agent 处理函数
     # 根据是否启用协同模式选择不同的处理方式
     if is_orchestration_enabled():
@@ -457,10 +563,20 @@ async def start_im_channels(agent_or_master):
             _message_gateway.set_brain(master._local_agent.brain)
     else:
         # 单 Agent 模式：直接调用 Agent
+        # 运行时通过 settings.multi_agent_enabled 检查是否走多Agent路径
         agent = agent_or_master
 
         async def agent_handler(session, message: str) -> str:
-            """直接通过 Agent 处理消息"""
+            """通过 Agent 处理消息（运行时检查多Agent模式开关）"""
+            # 多Agent模式分叉点（Phase 2 Orchestrator 就绪后生效）
+            if settings.multi_agent_enabled and _orchestrator is not None:
+                try:
+                    return await _orchestrator.handle_message(session, message)
+                except Exception as e:
+                    logger.error(f"Orchestrator handler error: {e}", exc_info=True)
+                    return f"❌ 处理出错: {str(e)}"
+
+            # 单Agent路径（现有逻辑不变）
             try:
                 session_messages = session.context.get_messages()
                 response = await agent.chat_with_session(
@@ -504,12 +620,28 @@ async def start_im_channels(agent_or_master):
     return []
 
 
-async def stop_im_channels():
-    """停止 IM 通道"""
-    global _message_gateway, _session_manager
+async def stop_im_channels(*, graceful: bool = True, drain_timeout: float = 30.0):
+    """
+    停止 IM 通道
+
+    Args:
+        graceful: True 时先排空进行中任务再停止，False 时立即停止
+        drain_timeout: 排空等待超时秒数
+    """
+    global _message_gateway, _session_manager, _orchestrator
+
+    if _orchestrator:
+        try:
+            await _orchestrator.shutdown()
+        except Exception as e:
+            logger.warning(f"Orchestrator shutdown error: {e}")
+        _orchestrator = None
 
     if _message_gateway:
-        await _message_gateway.stop()
+        if graceful:
+            await _message_gateway.drain(timeout=drain_timeout)
+        else:
+            await _message_gateway.stop()
         logger.info("MessageGateway stopped")
 
     if _session_manager:
@@ -673,7 +805,11 @@ def show_channels():
 
 async def run_interactive():
     """运行交互式 CLI（同时启动 IM 通道）"""
+    import signal as _signal
+
     print_welcome()
+
+    shutdown_event = asyncio.Event()
 
     # 根据配置选择单 Agent 或多 Agent 协同模式
     if is_orchestration_enabled():
@@ -713,14 +849,28 @@ async def run_interactive():
 
     console.print()
 
+    # 注册信号处理器用于优雅关闭
+    _shutdown_triggered = False
+
+    def _interactive_signal_handler(signum, frame):
+        nonlocal _shutdown_triggered
+        if not _shutdown_triggered:
+            _shutdown_triggered = True
+            console.print("\n[yellow]收到停止信号，正在优雅关闭...[/yellow]")
+            try:
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(shutdown_event.set)
+            except RuntimeError:
+                pass
+
+    _signal.signal(_signal.SIGINT, _interactive_signal_handler)
+    _signal.signal(_signal.SIGTERM, _interactive_signal_handler)
+
     try:
-        # 使用 run_in_executor 异步获取用户输入，避免阻塞事件循环
-        # 这样 IM 通道（钉钉、飞书等）的消息处理不会被 CLI 等待输入阻塞
         loop = asyncio.get_running_loop()
 
-        while True:
+        while not shutdown_event.is_set():
             try:
-                # 获取用户输入（在线程池中执行，不阻塞事件循环）
                 user_input = await loop.run_in_executor(
                     None, Prompt.ask, "[bold blue]You[/bold blue]"
                 )
@@ -818,9 +968,9 @@ async def run_interactive():
                 logger.error(f"Error: {e}", exc_info=True)
                 console.print(f"[red]错误: {e}[/red]")
     finally:
-        # 停止服务
+        # 优雅关闭：排空进行中任务 → 持久化状态 → 关闭适配器
         with console.status("[bold yellow]正在停止服务...", spinner="dots"):
-            await stop_im_channels()
+            await stop_im_channels(graceful=True, drain_timeout=30.0)
             if is_orchestration_enabled():
                 await agent_or_master.stop()
         console.print("[green]✓[/green] 服务已停止")
@@ -1192,12 +1342,12 @@ def prompt_debug(
     asyncio.run(_debug())
 
 
-@app.command()
 def _reset_globals():
     """重置全局组件引用，用于重启时清除旧实例。"""
-    global _agent, _master_agent, _message_gateway, _session_manager
+    global _agent, _master_agent, _orchestrator, _message_gateway, _session_manager
     _agent = None
     _master_agent = None
+    _orchestrator = None
     _message_gateway = None
     _session_manager = None
 
@@ -1407,8 +1557,11 @@ def serve():
                             await asyncio.wait_for(api_task, timeout=2.0)
                         except (asyncio.CancelledError, TimeoutError):
                             pass
-                    # 使用 asyncio.shield 保护关闭操作
-                    await asyncio.wait_for(stop_im_channels(), timeout=5.0)
+                    # 优雅排空：等待进行中的 IM 任务完成（最多 30s），然后持久化状态
+                    await asyncio.wait_for(
+                        stop_im_channels(graceful=True, drain_timeout=30.0),
+                        timeout=35.0,
+                    )
                     if is_orchestration_enabled() and agent_or_master:
                         await asyncio.wait_for(agent_or_master.stop(), timeout=5.0)
                 except TimeoutError:

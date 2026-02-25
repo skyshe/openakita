@@ -38,10 +38,17 @@ class ChannelAdapter(ABC):
     # 通道名称（子类必须覆盖）
     channel_name: str = "unknown"
 
-    def __init__(self):
+    def __init__(self, *, channel_name: str | None = None, bot_id: str | None = None, agent_profile_id: str = "default"):
         self._message_callback: MessageCallback | None = None
         self._event_callback: EventCallback | None = None
         self._running = False
+        if channel_name is not None:
+            self.channel_name = channel_name
+        if bot_id is not None:
+            self.bot_id = bot_id
+        else:
+            self.bot_id = self.channel_name
+        self.agent_profile_id = agent_profile_id
 
     @property
     def is_running(self) -> bool:

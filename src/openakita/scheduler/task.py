@@ -131,6 +131,9 @@ class ScheduledTask:
     chat_id: str | None = None  # 结果发送的聊天 ID
     user_id: str | None = None  # 创建者
 
+    # 多 Agent 配置（单 Agent 模式下始终为 "default"，无功能影响）
+    agent_profile_id: str = "default"
+
     # 状态
     enabled: bool = True
     status: TaskStatus = TaskStatus.PENDING
@@ -343,6 +346,7 @@ class ScheduledTask:
             "channel_id": self.channel_id,
             "chat_id": self.chat_id,
             "user_id": self.user_id,
+            "agent_profile_id": self.agent_profile_id,
             "enabled": self.enabled,
             "status": self.status.value,
             "deletable": self.deletable,
@@ -372,6 +376,7 @@ class ScheduledTask:
             channel_id=data.get("channel_id"),
             chat_id=data.get("chat_id"),
             user_id=data.get("user_id"),
+            agent_profile_id=data.get("agent_profile_id", "default"),
             enabled=data.get("enabled", True),
             status=TaskStatus(data.get("status", "pending")),
             deletable=data.get("deletable", True),

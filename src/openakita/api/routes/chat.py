@@ -33,6 +33,52 @@ def _resolve_agent(agent: object):
     return None
 
 
+def _is_multi_agent_enabled() -> bool:
+    from openakita.config import settings
+    return settings.multi_agent_enabled
+
+
+def _apply_agent_profile(session: object, new_profile_id: str) -> bool:
+    """Store agent_profile_id in session context and record the switch.
+
+    Returns True if profile was applied, False if profile_id is invalid.
+    """
+    from datetime import datetime
+
+    ctx = getattr(session, "context", None)
+    if ctx is None:
+        return False
+    old_profile_id = ctx.agent_profile_id
+    if old_profile_id == new_profile_id:
+        return True
+
+    # Validate that profile exists
+    try:
+        from openakita.agents.presets import SYSTEM_PRESETS
+        from openakita.agents.profile import ProfileStore
+        from openakita.config import settings
+
+        known_ids = {p.id for p in SYSTEM_PRESETS}
+        if new_profile_id not in known_ids:
+            store = ProfileStore(settings.data_dir / "agents")
+            if store.get(new_profile_id) is None:
+                logger.warning(f"[Chat API] Unknown agent profile: {new_profile_id!r}")
+                return False
+    except Exception:
+        pass  # graceful fallback — allow switch if validation infra unavailable
+
+    ctx.agent_switch_history.append({
+        "from": old_profile_id,
+        "to": new_profile_id,
+        "at": datetime.now().isoformat(),
+    })
+    ctx.agent_profile_id = new_profile_id
+    logger.info(
+        f"[Chat API] Agent profile switched: {old_profile_id!r} -> {new_profile_id!r}"
+    )
+    return True
+
+
 async def _stream_chat(
     chat_request: ChatRequest,
     agent: object,
@@ -128,6 +174,10 @@ async def _stream_chat(
                     create_if_missing=True,
                 )
                 if session:
+                    # Apply agent_profile_id if multi-agent mode is enabled
+                    if chat_request.agent_profile_id and _is_multi_agent_enabled():
+                        _apply_agent_profile(session, chat_request.agent_profile_id)
+
                     # 先添加用户消息，再获取完整历史（含当前消息）
                     # 这与 IM 路径一致：gateway 先 add_message，再传 session_messages
                     if chat_request.message:
@@ -313,6 +363,7 @@ async def chat(request: Request, body: ChatRequest):
     - plan_created / plan_step_updated
     - ask_user
     - agent_switch
+    - agent_handoff
     - error
     - done
     """

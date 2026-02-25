@@ -12,9 +12,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from openakita.utils.atomic_io import atomic_json_write
 
 from .session import Session, SessionConfig, SessionState
 from .user import UserManager
@@ -52,6 +55,7 @@ class SessionManager:
 
         # 活跃会话缓存 {session_key: Session}
         self._sessions: dict[str, Session] = {}
+        self._sessions_lock = threading.RLock()
 
         # 通道注册表：记录每个 IM 通道最后已知的 chat_id / user_id
         # 不受 session 过期清理影响，用于定时任务等场景回溯通道目标
@@ -182,26 +186,28 @@ class SessionManager:
         """
         session_key = f"{channel}:{chat_id}:{user_id}"
 
-        # 检查缓存
-        if session_key in self._sessions:
-            session = self._sessions[session_key]
-            session.touch()
-            return session
+        with self._sessions_lock:
+            # 检查缓存
+            if session_key in self._sessions:
+                session = self._sessions[session_key]
+                session.touch()
+                return session
 
-        # 创建新会话
-        if create_if_missing:
-            session = self._create_session(channel, chat_id, user_id, config)
-            self._sessions[session_key] = session
-            logger.info(f"Created new session: {session_key}")
-            return session
+            # 创建新会话
+            if create_if_missing:
+                session = self._create_session(channel, chat_id, user_id, config)
+                self._sessions[session_key] = session
+                logger.info(f"Created new session: {session_key}")
+                return session
 
         return None
 
     def get_session_by_id(self, session_id: str) -> Session | None:
         """通过 session_id 获取会话"""
-        for session in self._sessions.values():
-            if session.id == session_id:
-                return session
+        with self._sessions_lock:
+            for session in self._sessions.values():
+                if session.id == session_id:
+                    return session
         return None
 
     def _create_session(
@@ -234,13 +240,14 @@ class SessionManager:
 
     def close_session(self, session_key: str) -> bool:
         """关闭会话"""
-        if session_key in self._sessions:
-            session = self._sessions[session_key]
-            session.close()
-            del self._sessions[session_key]
-            self.mark_dirty()  # 标记需要保存
-            logger.info(f"Closed session: {session_key}")
-            return True
+        with self._sessions_lock:
+            if session_key in self._sessions:
+                session = self._sessions[session_key]
+                session.close()
+                del self._sessions[session_key]
+                self.mark_dirty()
+                logger.info(f"Closed session: {session_key}")
+                return True
         return False
 
     def list_sessions(
@@ -257,7 +264,8 @@ class SessionManager:
             user_id: 过滤用户
             state: 过滤状态
         """
-        sessions = list(self._sessions.values())
+        with self._sessions_lock:
+            sessions = list(self._sessions.values())
 
         if channel:
             sessions = [s for s in sessions if s.channel == channel]
@@ -270,14 +278,17 @@ class SessionManager:
 
     def get_session_count(self) -> dict[str, int]:
         """获取会话统计"""
+        with self._sessions_lock:
+            all_sessions = list(self._sessions.values())
+
         stats = {
-            "total": len(self._sessions),
+            "total": len(all_sessions),
             "active": 0,
             "idle": 0,
             "by_channel": {},
         }
 
-        for session in self._sessions.values():
+        for session in all_sessions:
             if session.state == SessionState.ACTIVE:
                 stats["active"] += 1
             elif session.state == SessionState.IDLE:
@@ -290,17 +301,17 @@ class SessionManager:
 
     async def cleanup_expired(self) -> int:
         """清理过期会话"""
-        expired_keys = []
+        with self._sessions_lock:
+            expired_keys = [
+                key for key, session in self._sessions.items()
+                if session.is_expired()
+            ]
 
-        for key, session in self._sessions.items():
-            if session.is_expired():
-                expired_keys.append(key)
-
-        for key in expired_keys:
-            session = self._sessions[key]
-            session.mark_expired()
-            del self._sessions[key]
-            logger.debug(f"Cleaned up expired session: {key}")
+            for key in expired_keys:
+                session = self._sessions[key]
+                session.mark_expired()
+                del self._sessions[key]
+                logger.debug(f"Cleaned up expired session: {key}")
 
         if expired_keys:
             logger.info(f"Cleaned up {len(expired_keys)} expired sessions")
@@ -435,11 +446,10 @@ class SessionManager:
             logger.warning(f"Failed to load channel registry: {e}")
 
     def _save_channel_registry(self) -> None:
-        """保存通道注册表到文件"""
+        """保存通道注册表到文件（原子写入）"""
         registry_file = self.storage_path / "channel_registry.json"
         try:
-            with open(registry_file, "w", encoding="utf-8") as f:
-                json.dump(self._channel_registry, f, ensure_ascii=False, indent=2)
+            atomic_json_write(registry_file, self._channel_registry)
         except Exception as e:
             logger.warning(f"Failed to save channel registry: {e}")
 

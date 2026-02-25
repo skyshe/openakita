@@ -43,6 +43,13 @@ class MemoryPriority(Enum):
     PERMANENT = "permanent"
 
 
+class MemoryScope(str, Enum):
+    """记忆作用域"""
+    GLOBAL = "global"      # 全局共享（当前行为）
+    AGENT = "agent"        # Agent 私有
+    SESSION = "session"    # 会话私有
+
+
 def _short_uuid() -> str:
     return str(uuid.uuid4())[:8]
 
@@ -81,6 +88,10 @@ class SemanticMemory:
     superseded_by: str | None = None
     source_episode_id: str | None = None
 
+    # v3: 记忆分层
+    scope: str = "global"        # MemoryScope value
+    scope_owner: str = ""        # agent_profile_id or session_id
+
     # v2: retention / TTL
     expires_at: datetime | None = None
 
@@ -105,6 +116,8 @@ class SemanticMemory:
             else None,
             "superseded_by": self.superseded_by,
             "source_episode_id": self.source_episode_id,
+            "scope": self.scope,
+            "scope_owner": self.scope_owner,
             "expires_at": self.expires_at.isoformat() if self.expires_at else None,
         }
         return d
@@ -136,6 +149,8 @@ class SemanticMemory:
             else None,
             superseded_by=data.get("superseded_by"),
             source_episode_id=data.get("source_episode_id"),
+            scope=data.get("scope", "global"),
+            scope_owner=data.get("scope_owner", ""),
             expires_at=datetime.fromisoformat(data["expires_at"]) if data.get("expires_at") else None,
         )
 

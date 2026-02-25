@@ -91,6 +91,10 @@ class DingTalkAdapter(ChannelAdapter):
         app_secret: str,
         agent_id: str | None = None,
         media_dir: Path | None = None,
+        *,
+        channel_name: str | None = None,
+        bot_id: str | None = None,
+        agent_profile_id: str = "default",
     ):
         """
         Args:
@@ -98,8 +102,11 @@ class DingTalkAdapter(ChannelAdapter):
             app_secret: 应用 Client Secret (原 AppSecret，在钉钉开发者后台获取)
             agent_id: 应用 AgentId (发送消息时需要)
             media_dir: 媒体文件存储目录
+            channel_name: 通道名称（多Bot时用于区分实例）
+            bot_id: Bot 实例唯一标识
+            agent_profile_id: 绑定的 agent profile ID
         """
-        super().__init__()
+        super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
         self.config = DingTalkConfig(
             app_key=app_key,
@@ -275,6 +282,20 @@ class DingTalkAdapter(ChannelAdapter):
         # 根据消息类型构建 content
         content = await self._parse_message_content(msg_type, raw_data)
 
+        is_direct_message = conversation_type == "1"
+
+        # 检测 @机器人：钉钉 isInAtList 字段，或检查 atUsers 列表
+        is_mentioned = False
+        if raw_data.get("isInAtList") is True:
+            is_mentioned = True
+        elif not is_mentioned:
+            at_users = raw_data.get("atUsers") or []
+            robot_code = self.config.app_key
+            for at_user in at_users:
+                if at_user.get("dingtalkId") == robot_code:
+                    is_mentioned = True
+                    break
+
         unified = UnifiedMessage.create(
             channel=self.channel_name,
             channel_message_id=msg_id,
@@ -283,6 +304,8 @@ class DingTalkAdapter(ChannelAdapter):
             chat_id=conversation_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=raw_data,
             metadata=metadata,
         )

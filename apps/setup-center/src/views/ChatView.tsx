@@ -2,6 +2,7 @@
 // 支持流式 MD 渲染、思考内容折叠、Plan/Todo、斜杠命令、多模态、多 Agent、端点选择
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { setThemePref } from "../theme";
 import type { Theme } from "../theme";
@@ -13,6 +14,7 @@ import rehypeHighlight from "rehype-highlight";
 import type {
   ChatMessage,
   ChatConversation,
+  ConversationStatus,
   ChatToolCall,
   ChatPlan,
   ChatPlanStep,
@@ -28,7 +30,7 @@ import type {
   ChainSummaryItem,
   ChatDisplayMode,
 } from "../types";
-import { genId, formatTime, formatDate } from "../utils";
+import { genId, formatTime, formatDate, timeAgo } from "../utils";
 import {
   IconSend, IconPaperclip, IconMic, IconStopCircle,
   IconPlan, IconPlus, IconMenu, IconStop, IconX,
@@ -36,7 +38,7 @@ import {
   IconChevronDown, IconChevronUp, IconMessageCircle, IconChevronRight,
   IconImage, IconRefresh, IconClipboard, IconTrash, IconZap,
   IconMask, IconBot, IconUsers, IconHelp, IconEdit, IconDownload,
-  IconPin,
+  IconPin, IconSearch, IconCircleDot, IconXCircle,
 } from "../icons";
 
 let _artifactClickTimer: ReturnType<typeof setTimeout> | null = null;
@@ -149,6 +151,7 @@ type StreamEvent =
   | { type: "ask_user"; question: string; options?: { id: string; label: string }[]; allow_multiple?: boolean; questions?: { id: string; prompt: string; options?: { id: string; label: string }[]; allow_multiple?: boolean }[] }
   | { type: "user_insert"; content: string }
   | { type: "agent_switch"; agentName: string; reason: string }
+  | { type: "agent_handoff"; from_agent: string; to_agent: string; reason?: string }
   | { type: "artifact"; artifact_type: string; file_url: string; path: string; name: string; caption: string; size?: number }
   | { type: "ui_preference"; theme?: string; language?: string }
   | { type: "error"; message: string }
@@ -1427,12 +1430,14 @@ export function ChatView({
   onStartService,
   apiBaseUrl = "http://127.0.0.1:18900",
   visible = true,
+  multiAgentEnabled = false,
 }: {
   serviceRunning: boolean;
   endpoints: EndpointSummary[];
   onStartService: () => void;
   apiBaseUrl?: string;
   visible?: boolean;
+  multiAgentEnabled?: boolean;
 }) {
   const { t, i18n } = useTranslation();
 
@@ -1464,7 +1469,8 @@ export function ChatView({
   const [selectedEndpoint, setSelectedEndpoint] = useState("auto");
   const [planMode, setPlanMode] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [convSearchQuery, setConvSearchQuery] = useState("");
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashFilter, setSlashFilter] = useState("");
   const [slashSelectedIdx, setSlashSelectedIdx] = useState(0);
@@ -1497,6 +1503,17 @@ export function ChatView({
   const [isRecording, setIsRecording] = useState(false);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const [agentProfiles, setAgentProfiles] = useState<{id:string;name:string;description:string;icon:string;color:string;name_i18n?:Record<string,string>;description_i18n?:Record<string,string>}[]>([]);
+  const [selectedAgent, setSelectedAgent] = useState("default");
+  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
+  const agentMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const updateConvStatus = useCallback((convId: string, status: ConversationStatus) => {
+    setConversations((prev) =>
+      prev.map((c) => c.id === convId ? { ...c, status, timestamp: Date.now() } : c)
+    );
+  }, []);
 
   // 会话右键菜单 & 重命名
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
@@ -1543,6 +1560,13 @@ export function ChatView({
       else localStorage.removeItem(STORAGE_KEY_ACTIVE);
     } catch {}
   }, [activeConvId]);
+
+  // Force re-render every 30s to refresh relative timestamps
+  const [, setTimeTick] = useState(0);
+  useEffect(() => {
+    const iv = setInterval(() => setTimeTick((t) => t + 1), 30_000);
+    return () => clearInterval(iv);
+  }, []);
 
   // ── 持久化消息（流式结束后 debounce 写入，避免高频写入） ──
   const saveMessagesTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1606,9 +1630,14 @@ export function ChatView({
         } catch { setMessages([]); }
       }
       isInitialScrollRef.current = true;
+      // Restore agent selection for the conversation
+      if (multiAgentEnabled) {
+        const conv = conversations.find((c) => c.id === activeConvId);
+        if (conv?.agentProfileId) setSelectedAgent(conv.agentProfileId);
+      }
     }
     prevConvIdRef.current = activeConvId;
-  }, [activeConvId, serviceRunning, apiBaseUrl]);
+  }, [activeConvId, serviceRunning, apiBaseUrl, multiAgentEnabled, conversations]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const isInitialScrollRef = useRef(true); // first scroll should be instant, not smooth
@@ -1634,6 +1663,44 @@ export function ChatView({
     return () => { cancelled = true; };
   }, [serviceRunning, apiBaseUrl]);
 
+  useEffect(() => {
+    if (!multiAgentEnabled) {
+      setAgentProfiles([]);
+      return;
+    }
+    const fetchProfiles = async () => {
+      try {
+        const res = await fetch(`${apiBaseUrl}/api/agents/profiles`);
+        if (res.ok) {
+          const data = await res.json();
+          setAgentProfiles(data.profiles || []);
+        }
+      } catch (e) {
+        console.warn("Failed to fetch agent profiles:", e);
+      }
+    };
+    fetchProfiles();
+  }, [multiAgentEnabled, apiBaseUrl, serviceRunning]);
+
+  // Sync selectedAgent → current conversation's agentProfileId
+  useEffect(() => {
+    if (!multiAgentEnabled || !activeConvId) return;
+    setConversations((prev) =>
+      prev.map((c) => c.id === activeConvId ? { ...c, agentProfileId: selectedAgent } : c)
+    );
+  }, [selectedAgent, activeConvId, multiAgentEnabled]);
+
+  useEffect(() => {
+    if (!agentMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (agentMenuRef.current && !agentMenuRef.current.contains(e.target as Node)) {
+        setAgentMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [agentMenuOpen]);
+
   // Restore conversations from backend when localStorage is empty (e.g. after Tauri restart)
   const sessionRestoreAttempted = useRef(false);
   useEffect(() => {
@@ -1647,7 +1714,7 @@ export function ChatView({
         const res = await fetch(`${apiBaseUrl}/api/sessions?channel=desktop`);
         if (!res.ok || cancelled) return;
         const data = await res.json();
-        const backendSessions: { id: string; title: string; lastMessage: string; timestamp: number; messageCount: number }[] = data.sessions || [];
+        const backendSessions: { id: string; title: string; lastMessage: string; timestamp: number; messageCount: number; agentProfileId?: string }[] = data.sessions || [];
         if (backendSessions.length === 0 || cancelled) return;
 
         const restoredConvs: ChatConversation[] = backendSessions.map((s) => ({
@@ -1656,6 +1723,7 @@ export function ChatView({
           lastMessage: s.lastMessage || "",
           timestamp: s.timestamp,
           messageCount: s.messageCount || 0,
+          agentProfileId: s.agentProfileId,
         }));
         setConversations(restoredConvs);
 
@@ -1905,8 +1973,9 @@ export function ChatView({
       lastMessage: "",
       timestamp: Date.now(),
       messageCount: 0,
+      agentProfileId: multiAgentEnabled ? selectedAgent : undefined,
     }, ...prev]);
-  }, [activeConvId, messages]);
+  }, [activeConvId, messages, multiAgentEnabled, selectedAgent]);
 
   // ── 删除对话 ──
   const deleteConversation = useCallback((convId: string, e?: React.MouseEvent) => {
@@ -1997,11 +2066,10 @@ export function ChatView({
     setIsStreaming(true);
     setSlashOpen(false);
 
-    // 确保有对话（注意 setState 是异步的，需要用局部变量保存新 id）
     let convId = activeConvId;
     if (!convId) {
       convId = genId();
-      skipConvLoadRef.current = true; // 阻止 activeConvId effect 从 localStorage 加载空消息覆盖已添加的 messages
+      skipConvLoadRef.current = true;
       setActiveConvId(convId);
       setConversations((prev) => [{
         id: convId!,
@@ -2009,7 +2077,11 @@ export function ChatView({
         lastMessage: text,
         timestamp: Date.now(),
         messageCount: 1,
+        status: "running",
+        agentProfileId: multiAgentEnabled ? selectedAgent : undefined,
       }, ...prev]);
+    } else {
+      updateConvStatus(convId, "running");
     }
 
     // SSE 流式请求
@@ -2036,6 +2108,7 @@ export function ChatView({
         endpoint: selectedEndpoint === "auto" ? null : selectedEndpoint,
         thinking_mode: thinkingMode !== "auto" ? thinkingMode : null,
         thinking_depth: thinkingMode !== "off" ? thinkingDepth : null,
+        agent_profile_id: multiAgentEnabled ? selectedAgent : undefined,
       };
 
       // 附件信息
@@ -2063,6 +2136,7 @@ export function ChatView({
           m.id === assistantMsg.id ? { ...m, content: `错误：${response.status} ${errText}`, streaming: false } : m
         ));
         setIsStreaming(false);
+        if (convId) updateConvStatus(convId, "error");
         return;
       }
 
@@ -2391,6 +2465,17 @@ export function ChatView({
                   size: event.size,
                 }];
                 break;
+              case "agent_handoff":
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: genId(),
+                    role: "system",
+                    content: `🔄 ${event.from_agent} → ${event.to_agent}${event.reason ? `: ${event.reason}` : ""}`,
+                    timestamp: Date.now(),
+                  },
+                ]);
+                break;
               case "agent_switch":
                 currentAgent = event.agentName;
                 setMessages((prev) => {
@@ -2507,12 +2592,11 @@ export function ChatView({
       setIsStreaming(false);
       abortRef.current = null;
 
-      // 流式结束后更新对话摘要（lastMessage / messageCount）
       if (convId) {
         setConversations((prev) => {
           const updated = prev.map((c) =>
             c.id === convId
-              ? { ...c, lastMessage: text.slice(0, 60), timestamp: Date.now(), messageCount: (c.messageCount || 0) + 2 }
+              ? { ...c, lastMessage: text.slice(0, 60), timestamp: Date.now(), messageCount: (c.messageCount || 0) + 2, status: "completed" as ConversationStatus }
               : c
           );
           // AI 标题生成：第一轮对话完成后异步请求
@@ -2989,6 +3073,25 @@ export function ChatView({
     }
   }, []);
 
+  // ── Filtered + grouped conversations for Cursor-style sidebar ──
+  const filteredConversations = useMemo(() => {
+    const q = convSearchQuery.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) =>
+      c.title.toLowerCase().includes(q) ||
+      (c.lastMessage || "").toLowerCase().includes(q)
+    );
+  }, [conversations, convSearchQuery]);
+
+  const pinnedConvs = useMemo(() =>
+    filteredConversations.filter((c) => c.pinned).sort((a, b) => b.timestamp - a.timestamp),
+    [filteredConversations]
+  );
+  const agentConvs = useMemo(() =>
+    filteredConversations.filter((c) => !c.pinned).sort((a, b) => b.timestamp - a.timestamp),
+    [filteredConversations]
+  );
+
   // ── 未启动服务提示 ──
   if (!serviceRunning) {
     return (
@@ -3002,117 +3105,75 @@ export function ChatView({
     );
   }
 
+  const statusIcon = (status?: ConversationStatus) => {
+    switch (status) {
+      case "running":
+        return <span className="convStatusDot convStatusRunning"><IconLoader size={12} /></span>;
+      case "completed":
+        return <span className="convStatusDot convStatusCompleted"><IconCheck size={12} /></span>;
+      case "error":
+        return <span className="convStatusDot convStatusError"><IconXCircle size={12} /></span>;
+      default:
+        return <span className="convStatusDot convStatusIdle"><IconCircleDot size={12} /></span>;
+    }
+  };
+
+  const renderConvItem = (conv: ChatConversation) => {
+    const isActive = conv.id === activeConvId;
+    const agentProfile = conv.agentProfileId && conv.agentProfileId !== "default"
+      ? agentProfiles.find((p) => p.id === conv.agentProfileId)
+      : null;
+    return (
+      <div
+        key={conv.id}
+        className={`convItem ${isActive ? "convItemActive" : ""}`}
+        onClick={() => { if (renamingId !== conv.id) setActiveConvId(conv.id); }}
+        onContextMenu={(e) => { e.preventDefault(); setCtxMenu({ x: e.clientX, y: e.clientY, convId: conv.id }); }}
+      >
+        <div className="convItemIcon">
+          {agentProfile ? (
+            <span title={agentProfile.name} style={{ fontSize: 16 }}>{agentProfile.icon}</span>
+          ) : (
+            <IconMessageCircle size={16} style={{ opacity: 0.5 }} />
+          )}
+        </div>
+        <div className="convItemBody">
+          {renamingId === conv.id ? (
+            <input
+              autoFocus
+              value={renameText}
+              onChange={(e) => setRenameText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") confirmRename(conv.id, renameText);
+                if (e.key === "Escape") { setRenamingId(null); setRenameText(""); }
+              }}
+              onBlur={() => confirmRename(conv.id, renameText)}
+              onClick={(e) => e.stopPropagation()}
+              className="convRenameInput"
+            />
+          ) : (
+            <>
+              <div className="convItemTitle">{conv.title}</div>
+              <div className="convItemMeta">
+                {agentProfile && <span className="convItemAgent">{agentProfile.name}</span>}
+                {conv.lastMessage && <span className="convItemDesc">{conv.lastMessage.slice(0, 40)}</span>}
+              </div>
+            </>
+          )}
+        </div>
+        <div className="convItemRight">
+          <span className="convItemTime">{timeAgo(conv.timestamp)}</span>
+          {statusIcon(conv.status)}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div style={{ display: "flex", height: "100%", minHeight: 0 }}>
-      {/* 对话历史侧边栏 */}
-      {sidebarOpen && (
-        <div
-          style={{
-            width: 260,
-            minWidth: 260,
-            borderRight: "1px solid var(--line)",
-            background: "var(--panel)",
-            display: "flex",
-            flexDirection: "column",
-            overflow: "hidden",
-          }}
-        >
-          <div style={{ padding: "14px 14px 10px", borderBottom: "1px solid var(--line)" }}>
-            <button className="btnPrimary" onClick={newConversation} style={{ width: "100%", fontSize: 13 }}>
-              <IconPlus size={12} /> {t("chat.newConversation")}
-            </button>
-          </div>
-          <div style={{ flex: 1, overflow: "auto", padding: "8px 6px" }}>
-            {(() => {
-              const pinned = conversations.filter((c) => c.pinned).sort((a, b) => b.timestamp - a.timestamp);
-              const unpinned = conversations.filter((c) => !c.pinned).sort((a, b) => b.timestamp - a.timestamp);
 
-              const renderItem = (conv: ChatConversation) => (
-                <div
-                  key={conv.id}
-                  onClick={() => { if (renamingId !== conv.id) setActiveConvId(conv.id); }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setCtxMenu({ x: e.clientX, y: e.clientY, convId: conv.id });
-                  }}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: 10,
-                    cursor: "pointer",
-                    marginBottom: 4,
-                    background: conv.id === activeConvId ? "rgba(14,165,233,0.08)" : "transparent",
-                    display: "flex",
-                    alignItems: "flex-start",
-                    gap: 4,
-                  }}
-                >
-                  {conv.pinned && (
-                    <IconPin size={11} style={{ opacity: 0.35, flexShrink: 0, marginTop: 3 }} />
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    {renamingId === conv.id ? (
-                      <input
-                        autoFocus
-                        value={renameText}
-                        onChange={(e) => setRenameText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") confirmRename(conv.id, renameText);
-                          if (e.key === "Escape") { setRenamingId(null); setRenameText(""); }
-                        }}
-                        onBlur={() => confirmRename(conv.id, renameText)}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{
-                          width: "100%",
-                          fontSize: 13,
-                          fontWeight: 700,
-                          border: "1px solid var(--brand)",
-                          borderRadius: 6,
-                          padding: "2px 6px",
-                          background: "var(--bg)",
-                          color: "inherit",
-                          outline: "none",
-                        }}
-                      />
-                    ) : (
-                      <div style={{ fontWeight: 700, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {conv.title}
-                      </div>
-                    )}
-                    <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>
-                      {formatDate(conv.timestamp)} · {t("im.messageCount", { count: conv.messageCount })}
-                    </div>
-                  </div>
-                </div>
-              );
-
-              return (
-                <>
-                  {pinned.length > 0 && (
-                    <>
-                      <div style={{ padding: "6px 12px 4px", fontSize: 11, fontWeight: 600, opacity: 0.4, textTransform: "uppercase" }}>
-                        {t("chat.pinnedSection")}
-                      </div>
-                      {pinned.map(renderItem)}
-                      {unpinned.length > 0 && (
-                        <div style={{ height: 1, background: "var(--line)", margin: "6px 12px" }} />
-                      )}
-                    </>
-                  )}
-                  {unpinned.map(renderItem)}
-                  {conversations.length === 0 && (
-                    <div style={{ padding: 16, textAlign: "center", opacity: 0.4, fontSize: 13 }}>
-                      {t("common.noData")}
-                    </div>
-                  )}
-                </>
-              );
-            })()}
-          </div>
-        </div>
-      )}
-
-      {/* 会话右键菜单 */}
-      {ctxMenu && (
+      {/* 会话右键菜单 — portal 到 body 避免父级 backdrop-filter 影响 fixed 定位 */}
+      {ctxMenu && createPortal(
         <div
           style={{ position: "fixed", inset: 0, zIndex: 9999 }}
           onClick={() => setCtxMenu(null)}
@@ -3121,7 +3182,7 @@ export function ChatView({
           <div
             onClick={(e) => e.stopPropagation()}
             style={{
-              position: "absolute",
+              position: "fixed",
               left: ctxMenu.x,
               top: ctxMenu.y,
               background: "var(--panel)",
@@ -3179,24 +3240,20 @@ export function ChatView({
               </div>
             ))}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* 主聊天区 */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         {/* Chat top bar */}
         <div className="chatTopBar">
-          <button
-            onClick={() => setSidebarOpen((v) => !v)}
-            className="chatTopBarBtn"
-            style={{ background: sidebarOpen ? "rgba(14,165,233,0.08)" : "transparent" }}
-            title={t("chat.newConversation")}
-          >
-            <IconMenu size={16} />
+          <button onClick={newConversation} className="chatTopBarBtn">
+            <IconPlus size={14} />
           </button>
+
           <div style={{ flex: 1 }} />
 
-          {/* 思维链开关 */}
           <button
             onClick={() => setShowChain(v => !v)}
             className="chatTopBarBtn chainToggleBtn"
@@ -3206,7 +3263,6 @@ export function ChatView({
             <IconZap size={14} />
           </button>
 
-          {/* 模式切换: bubble <-> flat */}
           <button
             onClick={() => setDisplayMode(v => v === "bubble" ? "flat" : "bubble")}
             className="chatTopBarBtn modeToggleBtn"
@@ -3218,8 +3274,13 @@ export function ChatView({
             </span>
           </button>
 
-          <button onClick={newConversation} className="chatTopBarBtn">
-            <IconPlus size={14} /> <span>{t("chat.newConversation")}</span>
+          <button
+            onClick={() => setSidebarOpen((v) => !v)}
+            className="chatTopBarBtn"
+            style={{ background: sidebarOpen ? "rgba(14,165,233,0.08)" : "transparent" }}
+            title={t("chat.toggleHistory") || "会话列表"}
+          >
+            <IconMenu size={16} />
           </button>
         </div>
 
@@ -3376,6 +3437,48 @@ export function ChatView({
                   ))}
                 </div>
               )}
+              {multiAgentEnabled && agentProfiles.length > 0 && (
+                <div ref={agentMenuRef} style={{ position: "relative", marginLeft: 8 }}>
+                  <button
+                    className="chatModelPickerBtn"
+                    onClick={() => setAgentMenuOpen((v) => !v)}
+                    style={{ gap: 4 }}
+                  >
+                    <span style={{ fontSize: 13 }}>
+                      {(() => {
+                        const ap = agentProfiles.find(p => p.id === selectedAgent);
+                        return ap ? `${ap.icon} ${ap.name}` : t("chat.agentDefault");
+                      })()}
+                    </span>
+                    <IconChevronDown size={12} />
+                  </button>
+                  {agentMenuOpen && (
+                    <div className="chatModelMenu" style={{ minWidth: 220 }}>
+                      {!agentProfiles.some(p => p.id === "default") && (
+                        <div
+                          key="__default__"
+                          className={`chatModelMenuItem ${selectedAgent === "default" ? "chatModelMenuItemActive" : ""}`}
+                          onClick={() => { setSelectedAgent("default"); setAgentMenuOpen(false); }}
+                        >
+                          <span style={{ marginRight: 6 }}>🎯</span>
+                          <span style={{ fontWeight: 600 }}>{t("chat.agentDefault")}</span>
+                        </div>
+                      )}
+                      {agentProfiles.map((ap) => (
+                        <div
+                          key={ap.id}
+                          className={`chatModelMenuItem ${selectedAgent === ap.id ? "chatModelMenuItemActive" : ""}`}
+                          onClick={() => { setSelectedAgent(ap.id); setAgentMenuOpen(false); }}
+                        >
+                          <span style={{ marginRight: 6 }}>{ap.icon}</span>
+                          <span style={{ fontWeight: 600 }}>{ap.name}</span>
+                          <span style={{ fontSize: 11, opacity: 0.5, marginLeft: 6 }}>{ap.description}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Textarea */}
@@ -3526,6 +3629,53 @@ export function ChatView({
           </div>
         </div>
       </div>
+
+      {/* Cursor-style right sidebar — conversations */}
+      {sidebarOpen && (
+        <div className="convSidebar">
+          <div className="convSidebarHeader">
+            <div className="convSearchBox">
+              <IconSearch size={13} style={{ opacity: 0.4, flexShrink: 0 }} />
+              <input
+                className="convSearchInput"
+                placeholder={t("chat.searchConversations") || "搜索会话..."}
+                value={convSearchQuery}
+                onChange={(e) => setConvSearchQuery(e.target.value)}
+              />
+              {convSearchQuery && (
+                <button className="convSearchClear" onClick={() => setConvSearchQuery("")}>
+                  <IconX size={11} />
+                </button>
+              )}
+            </div>
+            <button className="convNewBtn" onClick={newConversation}>
+              {t("chat.newConversation")}
+            </button>
+          </div>
+
+          <div className="convSidebarList">
+            {pinnedConvs.length > 0 && (
+              <>
+                <div className="convSectionLabel">{t("chat.pinnedSection")}</div>
+                {pinnedConvs.map(renderConvItem)}
+              </>
+            )}
+
+            {agentConvs.length > 0 && (
+              <>
+                <div className="convSectionLabel">{t("chat.conversationsLabel") || "会话"}</div>
+                {agentConvs.map(renderConvItem)}
+              </>
+            )}
+
+            {filteredConversations.length === 0 && (
+              <div className="convEmpty">
+                {convSearchQuery ? t("common.noResults") || "无结果" : t("common.noData")}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Image lightbox overlay */}
       {lightbox && (

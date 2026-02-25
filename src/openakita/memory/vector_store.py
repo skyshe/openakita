@@ -326,11 +326,9 @@ class VectorStore:
             return False
 
         try:
-            with self._lock:
-                # 计算 embedding
-                embedding = self._model.encode(content).tolist()
+            embedding = self._model.encode(content).tolist()
 
-                # 存储到 ChromaDB
+            with self._lock:
                 self._collection.add(
                     ids=[memory_id],
                     embeddings=[embedding],
@@ -375,16 +373,13 @@ class VectorStore:
             return []
 
         try:
-            with self._lock:
-                # 计算查询 embedding
-                query_embedding = self._model.encode(query).tolist()
+            query_embedding = self._model.encode(query).tolist()
 
-                # 构建过滤条件
+            with self._lock:
                 where = None
                 if filter_type:
                     where = {"type": filter_type}
 
-                # 搜索
                 results = self._collection.query(
                     query_embeddings=[query_embedding],
                     n_results=limit,
@@ -478,11 +473,9 @@ class VectorStore:
             return False
 
         try:
-            with self._lock:
-                # 计算新 embedding
-                embedding = self._model.encode(content).tolist()
+            embedding = self._model.encode(content).tolist()
 
-                # 更新
+            with self._lock:
                 self._collection.update(
                     ids=[memory_id],
                     embeddings=[embedding],
@@ -556,24 +549,21 @@ class VectorStore:
             return 0
 
         try:
+            contents = [m["content"] for m in memories]
+            embeddings = self._model.encode(contents).tolist()
+
+            ids = [m["id"] for m in memories]
+            metadatas = [
+                {
+                    "type": m.get("type", "fact"),
+                    "priority": m.get("priority", "short_term"),
+                    "importance": m.get("importance", 0.5),
+                    "tags": ",".join(m.get("tags", [])),
+                }
+                for m in memories
+            ]
+
             with self._lock:
-                # 批量计算 embedding
-                contents = [m["content"] for m in memories]
-                embeddings = self._model.encode(contents).tolist()
-
-                # 准备数据
-                ids = [m["id"] for m in memories]
-                metadatas = [
-                    {
-                        "type": m.get("type", "fact"),
-                        "priority": m.get("priority", "short_term"),
-                        "importance": m.get("importance", 0.5),
-                        "tags": ",".join(m.get("tags", [])),
-                    }
-                    for m in memories
-                ]
-
-                # 批量添加
                 self._collection.add(
                     ids=ids,
                     embeddings=embeddings,

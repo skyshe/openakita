@@ -57,6 +57,7 @@ async def list_sessions(request: Request, channel: str = "desktop"):
             "lastMessage": last_msg_content,
             "timestamp": int(s.last_active.timestamp() * 1000),
             "messageCount": len(msgs),
+            "agentProfileId": getattr(s.context, "agent_profile_id", "default"),
         })
 
     return {"sessions": result}

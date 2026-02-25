@@ -85,6 +85,10 @@ class FeishuAdapter(ChannelAdapter):
         encrypt_key: str | None = None,
         media_dir: Path | None = None,
         log_level: str = "INFO",
+        *,
+        channel_name: str | None = None,
+        bot_id: str | None = None,
+        agent_profile_id: str = "default",
     ):
         """
         Args:
@@ -94,8 +98,11 @@ class FeishuAdapter(ChannelAdapter):
             encrypt_key: 事件加密密钥（如果配置了加密则需要）
             media_dir: 媒体文件存储目录
             log_level: 日志级别 (DEBUG, INFO, WARN, ERROR)
+            channel_name: 通道名称（多Bot时用于区分实例）
+            bot_id: Bot 实例唯一标识
+            agent_profile_id: 绑定的 agent profile ID
         """
-        super().__init__()
+        super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
         self.config = FeishuConfig(
             app_id=app_id,
@@ -113,6 +120,7 @@ class FeishuAdapter(ChannelAdapter):
         self._main_loop: asyncio.AbstractEventLoop | None = None
         self._ws_thread: threading.Thread | None = None
         self._ws_loop: asyncio.AbstractEventLoop | None = None
+        self._bot_open_id: str | None = None
 
     async def start(self) -> None:
         """
@@ -141,6 +149,20 @@ class FeishuAdapter(ChannelAdapter):
         except RuntimeError:
             self._main_loop = None
         logger.info("Feishu adapter: client initialized")
+
+        # 尝试获取机器人 open_id（用于精确匹配 @提及）
+        try:
+            import lark_oapi.api.bot.v3 as bot_v3
+
+            req = bot_v3.GetBotInfoRequest.builder().build()
+            resp = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._client.bot.v3.bot_info.get(req)
+            )
+            if resp.success() and resp.data and resp.data.bot:
+                self._bot_open_id = getattr(resp.data.bot, "open_id", None)
+                logger.info(f"Feishu bot open_id: {self._bot_open_id}")
+        except Exception as e:
+            logger.debug(f"Feishu: could not fetch bot info (non-critical): {e}")
 
         # 自动启动 WebSocket 长连接（非阻塞模式）
         try:
@@ -259,6 +281,20 @@ class FeishuAdapter(ChannelAdapter):
 
             logger.info(f"Feishu: received message from {sender.sender_id.open_id}")
 
+            # 提取 mentions 列表（用于 is_mentioned 检测）
+            mentions_raw = []
+            if hasattr(message, "mentions") and message.mentions:
+                for m in message.mentions:
+                    mid = getattr(m, "id", None)
+                    mentions_raw.append({
+                        "key": getattr(m, "key", ""),
+                        "name": getattr(m, "name", ""),
+                        "id": {
+                            "open_id": getattr(mid, "open_id", "") if mid else "",
+                            "user_id": getattr(mid, "user_id", "") if mid else "",
+                        },
+                    })
+
             # 构建消息字典
             msg_dict = {
                 "message_id": message.message_id,
@@ -267,6 +303,7 @@ class FeishuAdapter(ChannelAdapter):
                 "message_type": message.message_type,
                 "content": message.content,
                 "root_id": getattr(message, "root_id", None),
+                "mentions": mentions_raw,
             }
 
             sender_dict = {
@@ -473,11 +510,28 @@ class FeishuAdapter(ChannelAdapter):
             content.text = f"[不支持的消息类型: {msg_type}]"
 
         # 确定聊天类型
-        chat_type = message.get("chat_type", "p2p")
+        raw_chat_type = message.get("chat_type", "p2p")
+        is_direct_message = raw_chat_type == "p2p"
+
+        chat_type = raw_chat_type
         if chat_type == "p2p":
             chat_type = "private"
         elif chat_type == "group":
             chat_type = "group"
+
+        # 检测 @机器人 提及：检查 mentions 列表是否包含机器人
+        is_mentioned = False
+        mentions = message.get("mentions") or []
+        if mentions:
+            bot_open_id = getattr(self, "_bot_open_id", None)
+            if bot_open_id:
+                for m in mentions:
+                    m_id = m.get("id", {}) if isinstance(m, dict) else {}
+                    if m_id.get("open_id") == bot_open_id:
+                        is_mentioned = True
+                        break
+            else:
+                is_mentioned = bool(mentions)
 
         sender_id = sender.get("sender_id", {})
         user_id = sender_id.get("user_id") or sender_id.get("open_id", "")
@@ -490,6 +544,8 @@ class FeishuAdapter(ChannelAdapter):
             chat_id=message.get("chat_id", ""),
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             reply_to=message.get("root_id"),
             raw={"message": message, "sender": sender},
         )

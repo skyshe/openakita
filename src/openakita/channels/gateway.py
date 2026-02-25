@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ..sessions import Session, SessionManager
 from .base import ChannelAdapter
+from .group_response import GroupResponseMode, SmartModeThrottle
 from .types import OutgoingMessage, UnifiedMessage
 
 if TYPE_CHECKING:
@@ -814,6 +815,7 @@ class MessageGateway:
         # 处理任务
         self._processing_task: asyncio.Task | None = None
         self._running = False
+        self._accepting = True  # False = drain 模式，拒绝新消息
 
         # 中间件
         self._pre_process_hooks: list[Callable[[UnifiedMessage], Awaitable[UnifiedMessage]]] = []
@@ -866,9 +868,256 @@ class MessageGateway:
         self._progress_flush_tasks: dict[str, asyncio.Task] = {}  # session_key -> flush task
         self._progress_throttle_seconds: float = 2.0  # 默认节流窗口
 
+        # ==================== 群聊响应策略 ====================
+        self._smart_throttle = SmartModeThrottle()
+
+    async def _handle_mode_command(self, user_text: str) -> str:
+        """
+        处理 /模式 或 /mode 命令：查看和切换单/多Agent模式。
+
+        用法:
+          /模式           — 查看当前模式
+          /模式 开启      — 开启多Agent模式
+          /模式 关闭      — 关闭多Agent模式
+          /mode on|off   — 同上英文版
+        """
+        from ..config import runtime_state, settings
+
+        parts = user_text.strip().split(None, 1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        ON_ARGS = {"开启", "on", "true", "1", "multi"}
+        OFF_ARGS = {"关闭", "off", "false", "0", "single"}
+
+        if arg in ON_ARGS:
+            if settings.multi_agent_enabled:
+                return "ℹ️ 多Agent模式 (Beta) 已经是开启状态。"
+            settings.multi_agent_enabled = True
+            runtime_state.save()
+            logger.info("[Mode] multi_agent_enabled toggled ON via IM command")
+            # Deploy system presets on first enable
+            try:
+                from openakita.agents.presets import ensure_presets_on_mode_enable
+                ensure_presets_on_mode_enable(settings.data_dir / "agents")
+            except Exception as e:
+                logger.warning(f"[Gateway] Failed to deploy presets: {e}")
+            # Initialize orchestrator
+            try:
+                from openakita.main import _init_orchestrator
+                await _init_orchestrator()
+            except Exception as e:
+                logger.warning(f"[Gateway] Failed to init orchestrator: {e}")
+            return "✅ 已切换到 **多Agent模式 (Beta)**\n新消息将通过多Agent系统处理。"
+
+        if arg in OFF_ARGS:
+            if not settings.multi_agent_enabled:
+                return "ℹ️ 当前已经是单Agent模式。"
+            settings.multi_agent_enabled = False
+            runtime_state.save()
+            logger.info("[Mode] multi_agent_enabled toggled OFF via IM command")
+            return "✅ 已切换到 **单Agent模式**\n新消息将由默认Agent直接处理。"
+
+        current = settings.multi_agent_enabled
+        mode_label = "多Agent模式 (Beta)" if current else "单Agent模式"
+        lines = [
+            f"🔧 **当前模式: {mode_label}**\n",
+            "用法:",
+            "  `/模式 开启` — 切换到多Agent模式 (Beta)",
+            "  `/模式 关闭` — 切换到单Agent模式",
+        ]
+        return "\n".join(lines)
+
+    def _is_agent_command(self, text: str) -> bool:
+        """检查是否是多Agent相关命令"""
+        if not text:
+            return False
+        t = text.strip().lower()
+        if t in ("/help", "/帮助", "/状态", "/status", "/重置", "/agent_reset"):
+            return True
+        if t in ("/切换", "/switch") or t.startswith(("/切换 ", "/switch ")):
+            return True
+        return False
+
+    async def _handle_agent_command(
+        self, message: UnifiedMessage, user_text: str
+    ) -> str | None:
+        """
+        处理多Agent相关命令。仅当 multi_agent_enabled 时执行；否则返回提示。
+
+        支持: /切换 /switch /help /帮助 /状态 /status /重置 /agent_reset
+        """
+        from ..config import settings
+
+        if not settings.multi_agent_enabled:
+            t = user_text.strip().lower()
+            # Don't intercept generic commands in single-agent mode
+            if t in ("/help", "/帮助", "/状态", "/status"):
+                return None
+            return "多Agent模式未开启。发送 `/模式 开启` 开启。"
+
+        session = self.session_manager.get_session(
+            channel=message.channel,
+            chat_id=message.chat_id,
+            user_id=message.user_id,
+        )
+        if not session:
+            return "❌ 无法获取会话"
+
+        t = user_text.strip().lower()
+
+        # /切换 或 /switch [agent_id]
+        if t in ("/切换", "/switch") or t.startswith(("/切换 ", "/switch ")):
+            return await self._handle_agent_switch(session, t)
+
+        # /help 或 /帮助
+        if t in ("/help", "/帮助"):
+            return self._format_agent_help()
+
+        # /状态 或 /status
+        if t in ("/状态", "/status"):
+            return self._format_agent_status(session)
+
+        # /重置 或 /agent_reset
+        if t in ("/重置", "/agent_reset"):
+            return self._handle_agent_reset(session)
+
+        return None
+
+    async def _handle_agent_switch(self, session: Session, user_text: str) -> str:
+        """处理 /切换 [agent_id] 或 /switch [agent_id]"""
+        from datetime import datetime
+
+        from openakita.agents.presets import SYSTEM_PRESETS
+        from openakita.agents.profile import ProfileStore
+        from openakita.config import settings
+
+        all_profiles = list(SYSTEM_PRESETS)
+        try:
+            store = ProfileStore(settings.data_dir / "agents")
+            preset_ids = {p.id for p in SYSTEM_PRESETS}
+            all_profiles.extend(p for p in store.list_all() if p.id not in preset_ids)
+        except Exception:
+            pass
+
+        parts = user_text.split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        if not arg:
+            # 无参数：列出可用 Agent
+            lines = ["📋 **可用 Agent**\n"]
+            current_id = session.context.agent_profile_id
+            for p in all_profiles:
+                marker = " ⬅️ 当前" if p.id == current_id else ""
+                lines.append(f"• `{p.id}` — {p.icon} {p.name}: {p.description}{marker}")
+            lines.append("\n用法: `/切换 <agent_id>` 或 `/switch <agent_id>`")
+            return "\n".join(lines)
+
+        # 有参数：切换
+        agent_id = arg.lower()
+        profile_map = {p.id.lower(): p for p in all_profiles}
+        if agent_id not in profile_map:
+            available = ", ".join(p.id for p in all_profiles)
+            return f"❌ 未找到 Agent `{agent_id}`\n可用: {available}"
+
+        ctx = session.context
+        p = profile_map[agent_id]
+        old_id = ctx.agent_profile_id
+        if old_id.lower() == agent_id:
+            return f"ℹ️ 当前已是 **{p.icon} {p.name}**"
+
+        ctx.agent_switch_history.append({
+            "from": old_id,
+            "to": p.id,
+            "at": datetime.now().isoformat(),
+        })
+        ctx.agent_profile_id = p.id
+        self.session_manager.mark_dirty()
+        logger.info(f"[IM] Agent switched: {old_id!r} -> {agent_id!r} for {session.session_key}")
+
+        return f"✅ 已切换到 **{p.icon} {p.name}** ({p.description})"
+
+    def _format_agent_help(self) -> str:
+        """格式化 /help 输出"""
+        lines = [
+            "📖 **可用命令**\n",
+            "**模式:**",
+            "  `/模式` / `/mode` — 查看或切换单/多Agent模式",
+            "  `/模式 开启` — 开启多Agent模式",
+            "  `/模式 关闭` — 关闭多Agent模式",
+            "",
+            "**多Agent（需先开启多Agent模式）:**",
+            "  `/切换` / `/switch` — 列出可用 Agent",
+            "  `/切换 <id>` / `/switch <id>` — 切换当前 Agent",
+            "  `/状态` / `/status` — 查看当前 Agent 信息",
+            "  `/重置` / `/agent_reset` — 重置为默认 Agent",
+            "",
+            "**其他:**",
+            "  `/new` / `/新话题` — 开启新话题",
+            "  `/model` — 模型状态",
+            "  `/thinking` — 思考模式",
+        ]
+        return "\n".join(lines)
+
+    def _format_agent_status(self, session: Session) -> str:
+        """格式化 /状态 输出"""
+        from openakita.agents.presets import SYSTEM_PRESETS
+        from openakita.agents.profile import ProfileStore
+        from openakita.config import settings
+
+        all_profiles = list(SYSTEM_PRESETS)
+        try:
+            store = ProfileStore(settings.data_dir / "agents")
+            preset_ids = {p.id for p in SYSTEM_PRESETS}
+            all_profiles.extend(p for p in store.list_all() if p.id not in preset_ids)
+        except Exception:
+            pass
+
+        current_id = session.context.agent_profile_id
+        profile_map = {p.id.lower(): p for p in all_profiles}
+        p = profile_map.get(current_id.lower())
+
+        if p:
+            return (
+                f"🤖 **当前 Agent**\n\n"
+                f"**{p.icon} {p.name}** (`{p.id}`)\n"
+                f"{p.description}"
+            )
+        return f"🤖 **当前 Agent**\n\nID: `{current_id}`"
+
+    def _handle_agent_reset(self, session: Session) -> str:
+        """处理 /重置：重置为 default"""
+        from datetime import datetime
+
+        ctx = session.context
+        old_id = ctx.agent_profile_id
+        if old_id == "default":
+            return "ℹ️ 当前已是默认 Agent"
+
+        ctx.agent_switch_history.append({
+            "from": old_id,
+            "to": "default",
+            "at": datetime.now().isoformat(),
+        })
+        ctx.agent_profile_id = "default"
+        self.session_manager.mark_dirty()
+        logger.info(f"[IM] Agent reset to default for {session.session_key}")
+
+        return "✅ 已重置为默认 Agent"
+
+    def _get_group_response_mode(self, channel: str) -> GroupResponseMode:
+        """获取群聊响应模式（Per-Bot 配置 > 全局配置 > 默认值）"""
+        from ..config import get_settings
+        settings = get_settings()
+        raw = settings.group_response_mode
+        try:
+            return GroupResponseMode(raw)
+        except ValueError:
+            return GroupResponseMode.MENTION_ONLY
+
     async def start(self) -> None:
         """启动网关"""
         self._running = True
+        self._accepting = True
 
         # 预加载 Whisper 语音识别模型（在后台线程中执行，不阻塞启动）
         asyncio.create_task(self._preload_whisper_async())
@@ -1047,9 +1296,46 @@ class MessageGateway:
         except Exception as e:
             logger.error(f"Failed to load Whisper model: {e}", exc_info=True)
 
+    async def drain(self, timeout: float = 30.0) -> None:
+        """
+        优雅排空：停止接收新消息，等待进行中任务完成后再停止。
+
+        Args:
+            timeout: 等待进行中任务的最大秒数，超时后强制停止
+        """
+        self._accepting = False
+        logger.info("[Shutdown] Gateway entering drain mode, no longer accepting new messages")
+
+        active = {k for k, v in self._processing_sessions.items() if v}
+        if not active:
+            logger.info("[Shutdown] No in-flight tasks, proceeding to stop")
+            await self.stop()
+            return
+
+        logger.info(f"[Shutdown] Waiting for {len(active)} in-flight task(s): {active}")
+        deadline = asyncio.get_event_loop().time() + timeout
+        poll_interval = 0.5
+
+        while True:
+            active = {k for k, v in self._processing_sessions.items() if v}
+            if not active:
+                logger.info("[Shutdown] All in-flight tasks completed")
+                break
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                logger.warning(
+                    f"[Shutdown] Drain timeout ({timeout}s), "
+                    f"force-stopping with {len(active)} task(s) still active: {active}"
+                )
+                break
+            await asyncio.sleep(min(poll_interval, remaining))
+
+        await self.stop()
+
     async def stop(self) -> None:
-        """停止网关"""
+        """停止网关（立即停止，不等待进行中任务）"""
         self._running = False
+        self._accepting = False
 
         # 停止处理循环
         if self._processing_task:
@@ -1127,6 +1413,10 @@ class MessageGateway:
         - SKIP: 触发当前步骤跳过（skip_event），不终止任务
         - INSERT: 将用户消息注入任务上下文，让 LLM 决策如何处理
         """
+        if not self._accepting:
+            logger.debug(f"[Shutdown] Message rejected (drain mode): {message.channel}/{message.user_id}")
+            return
+
         session_key = f"{message.channel}:{message.chat_id}:{message.user_id}"
         _raw_text = (message.plain_text or "").strip()
 
@@ -1411,6 +1701,21 @@ class MessageGateway:
         )
 
         try:
+            # ==================== 群聊响应过滤 ====================
+            if message.chat_type == "group" and not message.is_direct_message:
+                mode = self._get_group_response_mode(message.channel)
+
+                if mode == GroupResponseMode.MENTION_ONLY and not message.is_mentioned:
+                    logger.debug(f"[IM] Group message ignored (mention_only): {user_text[:50]}")
+                    return
+
+                if mode == GroupResponseMode.SMART and not message.is_mentioned:
+                    if not self._smart_throttle.should_process(message.chat_id):
+                        logger.debug(f"[IM] Group message throttled (smart): {user_text[:50]}")
+                        return
+                    self._smart_throttle.record_process(message.chat_id)
+                    message.metadata["group_smart_mode"] = True
+
             # 标记会话开始处理
             async with self._interrupt_lock:
                 self._mark_session_processing(session_key, True)
@@ -1444,6 +1749,20 @@ class MessageGateway:
                     session_key, user_text, _thinking_session,
                 )
                 if response_text:
+                    await self._send_response(message, response_text)
+                    return
+
+            # 检查是否是模式切换命令（/模式 始终可用，不受 multi_agent_enabled 影响）
+            _cmd_lower = user_text.lower().strip()
+            if _cmd_lower in ("/模式", "/mode") or _cmd_lower.startswith(("/模式 ", "/mode ")):
+                response_text = await self._handle_mode_command(user_text)
+                await self._send_response(message, response_text)
+                return
+
+            # 检查是否是多Agent相关命令（/切换 /switch /help /帮助 /状态 /status /重置 /agent_reset）
+            if self._is_agent_command(user_text):
+                response_text = await self._handle_agent_command(message, user_text)
+                if response_text is not None:
                     await self._send_response(message, response_text)
                     return
 

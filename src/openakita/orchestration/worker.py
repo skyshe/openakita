@@ -16,6 +16,7 @@ WorkerAgent - 工作进程
 """
 
 import asyncio
+import warnings
 import contextlib
 import logging
 import os
@@ -70,6 +71,11 @@ class WorkerAgent:
             capabilities: 能力列表
             data_dir: 数据目录（用于共享记忆）
         """
+        warnings.warn(
+            "WorkerAgent is deprecated. Use AgentFactory/AgentInstancePool instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.agent_id = agent_id
         self.heartbeat_interval = heartbeat_interval
         self.capabilities = capabilities or ["chat", "execute"]

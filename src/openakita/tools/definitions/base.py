@@ -80,6 +80,7 @@ class ToolDefinition(TypedDict, total=False):
 # ==================== 工具分类 ====================
 
 ToolCategory = Literal[
+    "Agent",
     "File System",
     "Browser",
     "Desktop",
@@ -96,6 +97,7 @@ ToolCategory = Literal[
 ]
 
 CATEGORY_PREFIXES = {
+    "Agent": ("delegate_to_agent", "create_agent"),
     "Browser": "browser_",
     "Desktop": "desktop_",
     "Skills": (

@@ -62,7 +62,11 @@ class UnifiedStore:
     # Semantic Memory
     # ======================================================================
 
-    def save_semantic(self, memory: SemanticMemory) -> str:
+    def save_semantic(
+        self, memory: SemanticMemory, scope: str = "global", scope_owner: str = ""
+    ) -> str:
+        memory.scope = scope
+        memory.scope_owner = scope_owner
         d = memory.to_dict()
         self.db.save_memory(d)
         self.search.add(memory.id, memory.content, {
@@ -117,25 +121,34 @@ class UnifiedStore:
         query: str,
         limit: int = 10,
         filter_type: str | None = None,
+        scope: str = "global",
+        scope_owner: str = "",
     ) -> list[SemanticMemory]:
-        results = self.search.search(query, limit=limit, filter_type=filter_type)
+        results = self.search.search(query, limit=limit * 3, filter_type=filter_type)
         if not results and self._fts5_fallback is not None:
-            results = self._fts5_fallback.search(query, limit=limit, filter_type=filter_type)
+            results = self._fts5_fallback.search(query, limit=limit * 3, filter_type=filter_type)
 
         memories: list[SemanticMemory] = []
         for memory_id, _score in results:
             d = self.db.get_memory(memory_id)
             if d:
-                memories.append(SemanticMemory.from_dict(d))
+                d_scope = d.get("scope") or "global"
+                d_owner = d.get("scope_owner") or ""
+                if d_scope == scope and d_owner == scope_owner:
+                    memories.append(SemanticMemory.from_dict(d))
+                    if len(memories) >= limit:
+                        break
         return memories
 
     def query_semantic(self, **kwargs: Any) -> list[SemanticMemory]:
-        rows = self.db.query(**kwargs)
+        rows = self.db.query(**kwargs)  # scope/scope_owner pass through via kwargs
         return [SemanticMemory.from_dict(r) for r in rows]
 
-    def find_similar(self, subject: str, predicate: str) -> SemanticMemory | None:
+    def find_similar(
+        self, subject: str, predicate: str, scope: str = "global", scope_owner: str = ""
+    ) -> SemanticMemory | None:
         """Find existing memory with same subject+predicate for update detection."""
-        rows = self.db.query(subject=subject, limit=10)
+        rows = self.db.query(subject=subject, scope=scope, scope_owner=scope_owner, limit=10)
         for row in rows:
             if row.get("predicate", "").lower() == predicate.lower():
                 return SemanticMemory.from_dict(row)
@@ -145,14 +158,24 @@ class UnifiedStore:
             if score > 0.8:
                 d = self.db.get_memory(mid)
                 if d and d.get("subject", "").lower() == subject.lower():
-                    return SemanticMemory.from_dict(d)
+                    d_scope = d.get("scope") or "global"
+                    d_owner = d.get("scope_owner") or ""
+                    if d_scope == scope and d_owner == scope_owner:
+                        return SemanticMemory.from_dict(d)
         return None
 
-    def count_memories(self, memory_type: str | None = None) -> int:
-        return self.db.count(memory_type)
+    def count_memories(
+        self,
+        memory_type: str | None = None,
+        scope: str | None = None,
+        scope_owner: str | None = None,
+    ) -> int:
+        return self.db.count(memory_type, scope=scope, scope_owner=scope_owner)
 
-    def load_all_memories(self) -> list[SemanticMemory]:
-        rows = self.db.load_all()
+    def load_all_memories(
+        self, scope: str = "global", scope_owner: str = ""
+    ) -> list[SemanticMemory]:
+        rows = self.db.load_all(scope=scope, scope_owner=scope_owner)
         return [SemanticMemory.from_dict(r) for r in rows]
 
     # ======================================================================
@@ -266,9 +289,11 @@ class UnifiedStore:
     # Utilities
     # ======================================================================
 
-    def get_stats(self) -> dict:
+    def get_stats(
+        self, scope: str = "global", scope_owner: str = ""
+    ) -> dict:
         return {
-            "memory_count": self.db.count(),
+            "memory_count": self.db.count(scope=scope, scope_owner=scope_owner),
             "search_backend": self.search.backend_type,
             "search_available": self.search.available,
         }

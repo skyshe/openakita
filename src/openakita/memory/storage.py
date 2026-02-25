@@ -46,7 +46,8 @@ class MemoryStorage:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: sqlite3.Connection | None = None
-        self._lock = threading.RLock()
+        self._write_lock = threading.RLock()
+        self._lock = self._write_lock  # backward compat alias
         self._init_db()
 
     # ======================================================================
@@ -150,6 +151,14 @@ class MemoryStorage:
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance_score)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject)")
 
+        # v3: 记忆分层 — 新增 scope 列（兼容旧库）
+        for col, default in [("scope", "'global'"), ("scope_owner", "''")]:
+            try:
+                c.execute(f"ALTER TABLE memories ADD COLUMN {col} TEXT DEFAULT {default}")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope, scope_owner)")
+
         # --- FTS5 full-text index ---
         try:
             c.execute("""
@@ -208,7 +217,6 @@ class MemoryStorage:
         c.execute("CREATE INDEX IF NOT EXISTS idx_episodes_time ON episodes(started_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_episodes_outcome ON episodes(outcome)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_memories_episode ON memories(source_episode_id)")
-        c.execute("CREATE INDEX IF NOT EXISTS idx_turns_episode ON conversation_turns(episode_id)")
 
         # --- scratchpad ---
         c.execute("""
@@ -245,6 +253,7 @@ class MemoryStorage:
         c.execute("CREATE INDEX IF NOT EXISTS idx_turns_timestamp ON conversation_turns(timestamp)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_turns_tool ON conversation_turns(has_tool_calls)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_turns_extracted ON conversation_turns(extracted)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_turns_episode ON conversation_turns(episode_id)")
 
         # --- extraction_queue ---
         c.execute("""
@@ -372,8 +381,9 @@ class MemoryStorage:
                     (id, content, type, priority, source, importance_score,
                      access_count, tags, created_at, updated_at, expires_at, metadata,
                      subject, predicate, confidence, decay_rate,
-                     last_accessed_at, superseded_by, source_episode_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     last_accessed_at, superseded_by, source_episode_id,
+                     scope, scope_owner)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         memory.get("id", ""),
@@ -395,6 +405,8 @@ class MemoryStorage:
                         memory.get("last_accessed_at"),
                         memory.get("superseded_by"),
                         memory.get("source_episode_id"),
+                        memory.get("scope", "global"),
+                        memory.get("scope_owner", ""),
                     ),
                 )
                 self._conn.commit()
@@ -413,8 +425,9 @@ class MemoryStorage:
                     (id, content, type, priority, source, importance_score,
                      access_count, tags, created_at, updated_at, expires_at, metadata,
                      subject, predicate, confidence, decay_rate,
-                     last_accessed_at, superseded_by, source_episode_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     last_accessed_at, superseded_by, source_episode_id,
+                     scope, scope_owner)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -437,6 +450,8 @@ class MemoryStorage:
                             m.get("last_accessed_at"),
                             m.get("superseded_by"),
                             m.get("source_episode_id"),
+                            m.get("scope", "global"),
+                            m.get("scope_owner", ""),
                         )
                         for m in memories
                     ],
@@ -446,32 +461,36 @@ class MemoryStorage:
             except Exception as e:
                 logger.error(f"Failed to batch save memories: {e}")
 
-    def load_all(self) -> list[dict]:
+    def load_all(
+        self, scope: str = "global", scope_owner: str = ""
+    ) -> list[dict]:
         if not self._conn:
             return []
-        with self._lock:
-            try:
-                cursor = self._conn.execute(
-                    "SELECT * FROM memories ORDER BY created_at DESC"
-                )
-                return self._rows_to_dicts(cursor)
-            except Exception as e:
-                logger.error(f"Failed to load memories from SQLite: {e}")
-                return []
+        try:
+            cursor = self._conn.execute(
+                "SELECT * FROM memories "
+                "WHERE (scope IS NULL OR scope = ?) "
+                "AND (scope_owner IS NULL OR scope_owner = ?) "
+                "ORDER BY created_at DESC",
+                (scope, scope_owner),
+            )
+            return self._rows_to_dicts(cursor)
+        except Exception as e:
+            logger.error(f"Failed to load memories from SQLite: {e}")
+            return []
 
     def get_memory(self, memory_id: str) -> dict | None:
         if not self._conn:
             return None
-        with self._lock:
-            try:
-                cursor = self._conn.execute(
-                    "SELECT * FROM memories WHERE id = ?", (memory_id,)
-                )
-                rows = self._rows_to_dicts(cursor)
-                return rows[0] if rows else None
-            except Exception as e:
-                logger.error(f"Failed to get memory {memory_id}: {e}")
-                return None
+        try:
+            cursor = self._conn.execute(
+                "SELECT * FROM memories WHERE id = ?", (memory_id,)
+            )
+            rows = self._rows_to_dicts(cursor)
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error(f"Failed to get memory {memory_id}: {e}")
+            return None
 
     def delete_memory(self, memory_id: str) -> bool:
         if not self._conn:
@@ -494,6 +513,7 @@ class MemoryStorage:
             "access_count", "tags", "subject", "predicate", "confidence",
             "decay_rate", "last_accessed_at", "superseded_by",
             "source_episode_id", "updated_at", "metadata",
+            "scope", "scope_owner",
         }
         filtered = {k: v for k, v in updates.items() if k in allowed}
         if not filtered:
@@ -527,6 +547,8 @@ class MemoryStorage:
         source: str | None = None,
         min_importance: float | None = None,
         subject: str | None = None,
+        scope: str | None = None,
+        scope_owner: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[dict]:
@@ -551,81 +573,102 @@ class MemoryStorage:
         if subject:
             conditions.append("subject = ?")
             params.append(subject)
+        if scope is not None:
+            conditions.append("(scope IS NULL OR scope = ?)")
+            params.append(scope)
+        if scope_owner is not None:
+            conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
+            params.append(scope_owner)
 
         where = " AND ".join(conditions) if conditions else "1=1"
         params.extend([limit, offset])
 
-        with self._lock:
-            try:
-                cursor = self._conn.execute(
-                    f"SELECT * FROM memories WHERE {where} "
-                    f"ORDER BY importance_score DESC, created_at DESC "
-                    f"LIMIT ? OFFSET ?",
-                    params,
-                )
-                return self._rows_to_dicts(cursor)
-            except Exception as e:
-                logger.error(f"Failed to query memories: {e}")
-                return []
+        try:
+            cursor = self._conn.execute(
+                f"SELECT * FROM memories WHERE {where} "
+                f"ORDER BY importance_score DESC, created_at DESC "
+                f"LIMIT ? OFFSET ?",
+                params,
+            )
+            return self._rows_to_dicts(cursor)
+        except Exception as e:
+            logger.error(f"Failed to query memories: {e}")
+            return []
 
-    def count(self, memory_type: str | None = None) -> int:
+    def count(
+        self,
+        memory_type: str | None = None,
+        scope: str | None = None,
+        scope_owner: str | None = None,
+    ) -> int:
         if not self._conn:
             return 0
-        with self._lock:
-            try:
-                if memory_type:
-                    cur = self._conn.execute(
-                        "SELECT COUNT(*) FROM memories WHERE type = ?", (memory_type,)
-                    )
-                else:
-                    cur = self._conn.execute("SELECT COUNT(*) FROM memories")
-                return cur.fetchone()[0]
-            except Exception:
-                return 0
+        try:
+            conditions: list[str] = []
+            params: list[Any] = []
+            if memory_type:
+                conditions.append("type = ?")
+                params.append(memory_type)
+            if scope is not None:
+                conditions.append("(scope IS NULL OR scope = ?)")
+                params.append(scope)
+            if scope_owner is not None:
+                conditions.append("(scope_owner IS NULL OR scope_owner = ?)")
+                params.append(scope_owner)
+            where = " AND ".join(conditions) if conditions else "1=1"
+            cur = self._conn.execute(
+                f"SELECT COUNT(*) FROM memories WHERE {where}", params
+            )
+            return cur.fetchone()[0]
+        except Exception:
+            return 0
 
     # ======================================================================
     # FTS5 Search
     # ======================================================================
 
     def search_fts(self, query: str, limit: int = 10) -> list[dict]:
-        """Full-text search using FTS5 with BM25 ranking, with LIKE fallback for CJK."""
+        """Full-text search using FTS5 with BM25 ranking, with LIKE fallback for CJK.
+
+        TODO: Add scope filtering. FTS5 virtual tables don't support easy
+        column-based filtering; post-filter or JOIN with scope columns needed.
+        """
         if not self._conn or not query.strip():
             return []
-        with self._lock:
-            try:
-                safe_query = self._sanitize_fts_query(query)
-                cursor = self._conn.execute(
-                    """
-                    SELECT m.*, bm25(memories_fts) AS rank
-                    FROM memories_fts fts
-                    JOIN memories m ON m.rowid = fts.rowid
-                    WHERE memories_fts MATCH ?
-                    ORDER BY rank
-                    LIMIT ?
-                    """,
-                    (safe_query, limit),
-                )
-                results = self._rows_to_dicts(cursor)
-                if results:
-                    return results
-            except Exception as e:
-                logger.debug(f"FTS5 search failed (query={query!r}): {e}")
+        try:
+            safe_query = self._sanitize_fts_query(query)
+            cursor = self._conn.execute(
+                """
+                SELECT m.*, bm25(memories_fts) AS rank
+                FROM memories_fts fts
+                JOIN memories m ON m.rowid = fts.rowid
+                WHERE memories_fts MATCH ?
+                ORDER BY rank
+                LIMIT ?
+                """,
+                (safe_query, limit),
+            )
+            results = self._rows_to_dicts(cursor)
+            if results:
+                return results
+        except Exception as e:
+            logger.debug(f"FTS5 search failed (query={query!r}): {e}")
 
-            # Fallback: LIKE search for CJK text that FTS5 unicode61 can't tokenize
-            try:
-                keywords = query.strip().split()
-                if not keywords:
-                    return []
-                conditions = " OR ".join(["content LIKE ?"] * len(keywords))
-                params = [f"%{kw}%" for kw in keywords] + [limit]
-                cursor = self._conn.execute(
-                    f"SELECT * FROM memories WHERE {conditions} LIMIT ?",
-                    params,
-                )
-                return self._rows_to_dicts(cursor)
-            except Exception as e:
-                logger.debug(f"LIKE fallback search failed: {e}")
+        # Fallback: LIKE search for CJK text that FTS5 unicode61 can't tokenize
+        try:
+            keywords = query.strip().split()
+            if not keywords:
                 return []
+            conditions = " OR ".join(["content LIKE ?"] * len(keywords))
+            params = [f"%{kw}%" for kw in keywords] + [limit]
+            cursor = self._conn.execute(
+                f"SELECT * FROM memories WHERE {conditions} LIMIT ?",
+                params,
+            )
+            return self._rows_to_dicts(cursor)
+        except Exception as e:
+            logger.debug(f"LIKE fallback search failed: {e}")
+            return []
 
     @staticmethod
     def _sanitize_fts_query(query: str) -> str:
@@ -691,14 +734,13 @@ class MemoryStorage:
     def get_episode(self, episode_id: str) -> dict | None:
         if not self._conn:
             return None
-        with self._lock:
-            try:
-                cur = self._conn.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,))
-                rows = self._rows_to_dicts(cur, json_fields=["action_nodes", "entities", "tools_used", "linked_memory_ids", "tags"])
-                return rows[0] if rows else None
-            except Exception as e:
-                logger.error(f"Failed to get episode {episode_id}: {e}")
-                return None
+        try:
+            cur = self._conn.execute("SELECT * FROM episodes WHERE id = ?", (episode_id,))
+            rows = self._rows_to_dicts(cur, json_fields=["action_nodes", "entities", "tools_used", "linked_memory_ids", "tags"])
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error(f"Failed to get episode {episode_id}: {e}")
+            return None
 
     def search_episodes(
         self,
@@ -735,16 +777,15 @@ class MemoryStorage:
         where = " AND ".join(conditions) if conditions else "1=1"
         params.append(limit)
 
-        with self._lock:
-            try:
-                cur = self._conn.execute(
-                    f"SELECT * FROM episodes WHERE {where} ORDER BY started_at DESC LIMIT ?",
-                    params,
-                )
-                return self._rows_to_dicts(cur, json_fields=["action_nodes", "entities", "tools_used", "linked_memory_ids", "tags"])
-            except Exception as e:
-                logger.error(f"Failed to search episodes: {e}")
-                return []
+        try:
+            cur = self._conn.execute(
+                f"SELECT * FROM episodes WHERE {where} ORDER BY started_at DESC LIMIT ?",
+                params,
+            )
+            return self._rows_to_dicts(cur, json_fields=["action_nodes", "entities", "tools_used", "linked_memory_ids", "tags"])
+        except Exception as e:
+            logger.error(f"Failed to search episodes: {e}")
+            return []
 
     def update_episode(self, episode_id: str, updates: dict) -> bool:
         """Update specific fields of an episode."""
@@ -801,16 +842,15 @@ class MemoryStorage:
     def get_scratchpad(self, user_id: str = "default") -> dict | None:
         if not self._conn:
             return None
-        with self._lock:
-            try:
-                cur = self._conn.execute(
-                    "SELECT * FROM scratchpad WHERE user_id = ?", (user_id,)
-                )
-                rows = self._rows_to_dicts(cur, json_fields=["active_projects", "open_questions", "next_steps"])
-                return rows[0] if rows else None
-            except Exception as e:
-                logger.error(f"Failed to get scratchpad: {e}")
-                return None
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM scratchpad WHERE user_id = ?", (user_id,)
+            )
+            rows = self._rows_to_dicts(cur, json_fields=["active_projects", "open_questions", "next_steps"])
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error(f"Failed to get scratchpad: {e}")
+            return None
 
     def save_scratchpad(self, scratchpad: dict) -> None:
         if not self._conn:
@@ -915,51 +955,48 @@ class MemoryStorage:
     def get_session_turns(self, session_id: str) -> list[dict]:
         if not self._conn:
             return []
-        with self._lock:
-            try:
-                cur = self._conn.execute(
-                    "SELECT * FROM conversation_turns WHERE session_id = ? ORDER BY turn_index",
-                    (session_id,),
-                )
-                return self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
-            except Exception as e:
-                logger.error(f"Failed to get session turns: {e}")
-                return []
+        try:
+            cur = self._conn.execute(
+                "SELECT * FROM conversation_turns WHERE session_id = ? ORDER BY turn_index",
+                (session_id,),
+            )
+            return self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
+        except Exception as e:
+            logger.error(f"Failed to get session turns: {e}")
+            return []
 
     def get_max_turn_index(self, session_id: str) -> int:
         """返回下一个可用的 turn_index（用于续接，避免覆盖历史数据）"""
         if not self._conn:
             return 0
-        with self._lock:
-            try:
-                cur = self._conn.execute(
-                    "SELECT MAX(turn_index) FROM conversation_turns WHERE session_id = ?",
-                    (session_id,),
-                )
-                row = cur.fetchone()
-                return (row[0] if row[0] is not None else -1) + 1
-            except Exception as e:
-                logger.warning(f"Failed to get max turn_index for {session_id}: {e}")
-                return 0
+        try:
+            cur = self._conn.execute(
+                "SELECT MAX(turn_index) FROM conversation_turns WHERE session_id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return (row[0] if row[0] is not None else -1) + 1
+        except Exception as e:
+            logger.warning(f"Failed to get max turn_index for {session_id}: {e}")
+            return 0
 
     def get_recent_turns(self, session_id: str, limit: int = 20) -> list[dict]:
         """按 turn_index 倒序获取最近 N 轮对话"""
         if not self._conn:
             return []
-        with self._lock:
-            try:
-                cur = self._conn.execute(
-                    "SELECT role, content, timestamp, tool_calls, tool_results "
-                    "FROM conversation_turns "
-                    "WHERE session_id = ? ORDER BY turn_index DESC LIMIT ?",
-                    (session_id, limit),
-                )
-                rows = self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
-                rows.reverse()
-                return rows
-            except Exception as e:
-                logger.warning(f"Failed to get recent turns for {session_id}: {e}")
-                return []
+        try:
+            cur = self._conn.execute(
+                "SELECT role, content, timestamp, tool_calls, tool_results "
+                "FROM conversation_turns "
+                "WHERE session_id = ? ORDER BY turn_index DESC LIMIT ?",
+                (session_id, limit),
+            )
+            rows = self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
+            rows.reverse()
+            return rows
+        except Exception as e:
+            logger.warning(f"Failed to get recent turns for {session_id}: {e}")
+            return []
 
     def search_turns(
         self,
@@ -973,32 +1010,31 @@ class MemoryStorage:
             return []
         cutoff = (datetime.now() - timedelta(days=days_back)).isoformat()
         pattern = f"%{keyword}%"
-        with self._lock:
-            try:
-                if session_id:
-                    cur = self._conn.execute(
-                        "SELECT session_id, turn_index, role, content, "
-                        "tool_calls, tool_results, timestamp, episode_id "
-                        "FROM conversation_turns "
-                        "WHERE session_id = ? AND timestamp >= ? "
-                        "AND (content LIKE ? OR tool_calls LIKE ? OR tool_results LIKE ?) "
-                        "ORDER BY timestamp DESC LIMIT ?",
-                        (session_id, cutoff, pattern, pattern, pattern, limit),
-                    )
-                else:
-                    cur = self._conn.execute(
-                        "SELECT session_id, turn_index, role, content, "
-                        "tool_calls, tool_results, timestamp, episode_id "
-                        "FROM conversation_turns "
-                        "WHERE timestamp >= ? "
-                        "AND (content LIKE ? OR tool_calls LIKE ? OR tool_results LIKE ?) "
-                        "ORDER BY timestamp DESC LIMIT ?",
-                        (cutoff, pattern, pattern, pattern, limit),
-                    )
-                return self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
-            except Exception as e:
-                logger.warning(f"Failed to search turns for '{keyword}': {e}")
-                return []
+        try:
+            if session_id:
+                cur = self._conn.execute(
+                    "SELECT session_id, turn_index, role, content, "
+                    "tool_calls, tool_results, timestamp, episode_id "
+                    "FROM conversation_turns "
+                    "WHERE session_id = ? AND timestamp >= ? "
+                    "AND (content LIKE ? OR tool_calls LIKE ? OR tool_results LIKE ?) "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (session_id, cutoff, pattern, pattern, pattern, limit),
+                )
+            else:
+                cur = self._conn.execute(
+                    "SELECT session_id, turn_index, role, content, "
+                    "tool_calls, tool_results, timestamp, episode_id "
+                    "FROM conversation_turns "
+                    "WHERE timestamp >= ? "
+                    "AND (content LIKE ? OR tool_calls LIKE ? OR tool_results LIKE ?) "
+                    "ORDER BY timestamp DESC LIMIT ?",
+                    (cutoff, pattern, pattern, pattern, limit),
+                )
+            return self._rows_to_dicts(cur, json_fields=["tool_calls", "tool_results"])
+        except Exception as e:
+            logger.warning(f"Failed to search turns for '{keyword}': {e}")
+            return []
 
     # ======================================================================
     # Extraction Queue
@@ -1106,16 +1142,15 @@ class MemoryStorage:
     def get_cached_embedding(self, content_hash: str) -> bytes | None:
         if not self._conn:
             return None
-        with self._lock:
-            try:
-                cur = self._conn.execute(
-                    "SELECT embedding FROM embedding_cache WHERE content_hash = ?",
-                    (content_hash,),
-                )
-                row = cur.fetchone()
-                return row[0] if row else None
-            except Exception:
-                return None
+        try:
+            cur = self._conn.execute(
+                "SELECT embedding FROM embedding_cache WHERE content_hash = ?",
+                (content_hash,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
 
     def save_cached_embedding(
         self, content_hash: str, embedding: bytes, model: str, dimensions: int = 1024
@@ -1185,15 +1220,14 @@ class MemoryStorage:
     def get_attachment(self, attachment_id: str) -> dict | None:
         if not self._conn:
             return None
-        with self._lock:
-            try:
-                cursor = self._conn.execute(
-                    "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
-                )
-                rows = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
-                return rows[0] if rows else None
-            except Exception as e:
-                logger.error(f"Failed to get attachment {attachment_id}: {e}")
+        try:
+            cursor = self._conn.execute(
+                "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
+            )
+            rows = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
+            return rows[0] if rows else None
+        except Exception as e:
+            logger.error(f"Failed to get attachment {attachment_id}: {e}")
             return None
 
     def search_attachments(
@@ -1206,52 +1240,51 @@ class MemoryStorage:
     ) -> list[dict]:
         if not self._conn:
             return []
-        with self._lock:
-            try:
-                if query:
-                    safe_query = self._sanitize_fts_query(query)
-                    results = []
-                    try:
-                        cursor = self._conn.execute(
-                            """SELECT a.* FROM attachments a
-                               JOIN attachments_fts f ON a.rowid = f.rowid
-                               WHERE attachments_fts MATCH ?
-                               ORDER BY rank
-                               LIMIT ?""",
-                            (safe_query, limit * 3),
-                        )
-                        results = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
-                    except sqlite3.OperationalError:
-                        pass
-
-                    if not results:
-                        like_q = f"%{query}%"
-                        cursor = self._conn.execute(
-                            """SELECT * FROM attachments
-                               WHERE description LIKE ? OR filename LIKE ?
-                                     OR transcription LIKE ? OR extracted_text LIKE ?
-                               ORDER BY created_at DESC LIMIT ?""",
-                            (like_q, like_q, like_q, like_q, limit * 3),
-                        )
-                        results = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
-                else:
+        try:
+            if query:
+                safe_query = self._sanitize_fts_query(query)
+                results = []
+                try:
                     cursor = self._conn.execute(
-                        "SELECT * FROM attachments ORDER BY created_at DESC LIMIT ?",
-                        (limit * 3,),
+                        """SELECT a.* FROM attachments a
+                           JOIN attachments_fts f ON a.rowid = f.rowid
+                           WHERE attachments_fts MATCH ?
+                           ORDER BY rank
+                           LIMIT ?""",
+                        (safe_query, limit * 3),
                     )
                     results = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
+                except sqlite3.OperationalError:
+                    pass
 
-                if mime_type:
-                    results = [r for r in results if r.get("mime_type", "").startswith(mime_type)]
-                if direction:
-                    results = [r for r in results if r.get("direction") == direction]
-                if session_id:
-                    results = [r for r in results if r.get("session_id") == session_id]
+                if not results:
+                    like_q = f"%{query}%"
+                    cursor = self._conn.execute(
+                        """SELECT * FROM attachments
+                           WHERE description LIKE ? OR filename LIKE ?
+                                 OR transcription LIKE ? OR extracted_text LIKE ?
+                           ORDER BY created_at DESC LIMIT ?""",
+                        (like_q, like_q, like_q, like_q, limit * 3),
+                    )
+                    results = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
+            else:
+                cursor = self._conn.execute(
+                    "SELECT * FROM attachments ORDER BY created_at DESC LIMIT ?",
+                    (limit * 3,),
+                )
+                results = self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
 
-                return results[:limit]
-            except Exception as e:
-                logger.error(f"Failed to search attachments: {e}")
-                return []
+            if mime_type:
+                results = [r for r in results if r.get("mime_type", "").startswith(mime_type)]
+            if direction:
+                results = [r for r in results if r.get("direction") == direction]
+            if session_id:
+                results = [r for r in results if r.get("session_id") == session_id]
+
+            return results[:limit]
+        except Exception as e:
+            logger.error(f"Failed to search attachments: {e}")
+            return []
 
     def delete_attachment(self, attachment_id: str) -> bool:
         if not self._conn:
@@ -1268,16 +1301,15 @@ class MemoryStorage:
     def get_session_attachments(self, session_id: str) -> list[dict]:
         if not self._conn:
             return []
-        with self._lock:
-            try:
-                cursor = self._conn.execute(
-                    "SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at",
-                    (session_id,),
-                )
-                return self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
-            except Exception as e:
-                logger.error(f"Failed to get session attachments: {e}")
-                return []
+        try:
+            cursor = self._conn.execute(
+                "SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at",
+                (session_id,),
+            )
+            return self._rows_to_dicts(cursor, json_fields=["linked_memory_ids"])
+        except Exception as e:
+            logger.error(f"Failed to get session attachments: {e}")
+            return []
 
     # ======================================================================
     # Export / Import / Cleanup

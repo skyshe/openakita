@@ -9,6 +9,7 @@ Session 代表一个独立的对话上下文，包含:
 """
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -71,12 +72,21 @@ class SessionContext:
     summary: str | None = None  # 对话摘要（用于长对话压缩）
     topic_boundaries: list[int] = field(default_factory=list)  # 话题边界的消息索引
     current_topic_start: int = 0  # 当前话题起始消息索引
+    agent_profile_id: str = "default"
+    agent_switch_history: list[dict] = field(default_factory=list)
+    handoff_events: list[dict] = field(default_factory=list)  # agent_handoff events for SSE
+    # Active agents in this session (multi-agent collaboration)
+    active_agents: list[str] = field(default_factory=list)
+    # Delegation chain for the current request
+    delegation_chain: list[dict] = field(default_factory=list)
+    _msg_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def add_message(self, role: str, content: str, **metadata) -> None:
         """添加消息"""
-        self.messages.append(
-            {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **metadata}
-        )
+        with self._msg_lock:
+            self.messages.append(
+                {"role": role, "content": content, "timestamp": datetime.now().isoformat(), **metadata}
+            )
 
     def mark_topic_boundary(self) -> None:
         """在当前消息位置标记话题边界。
@@ -113,9 +123,10 @@ class SessionContext:
 
     def clear_messages(self) -> None:
         """清空消息历史"""
-        self.messages = []
-        self.topic_boundaries = []
-        self.current_topic_start = 0
+        with self._msg_lock:
+            self.messages = []
+            self.topic_boundaries = []
+            self.current_topic_start = 0
 
     def to_dict(self) -> dict:
         """序列化"""
@@ -127,6 +138,11 @@ class SessionContext:
             "summary": self.summary,
             "topic_boundaries": self.topic_boundaries,
             "current_topic_start": self.current_topic_start,
+            "agent_profile_id": self.agent_profile_id,
+            "agent_switch_history": self.agent_switch_history,
+            "handoff_events": self.handoff_events,
+            "active_agents": self.active_agents,
+            "delegation_chain": self.delegation_chain,
         }
 
     @classmethod
@@ -140,6 +156,11 @@ class SessionContext:
             summary=data.get("summary"),
             topic_boundaries=data.get("topic_boundaries", []),
             current_topic_start=data.get("current_topic_start", 0),
+            agent_profile_id=data.get("agent_profile_id", "default"),
+            agent_switch_history=data.get("agent_switch_history", []),
+            handoff_events=data.get("handoff_events", []),
+            active_agents=data.get("active_agents", []),
+            delegation_chain=data.get("delegation_chain", []),
         )
 
 
@@ -300,40 +321,41 @@ class Session:
 
     def _truncate_history(self) -> None:
         """截断历史消息，保留 75%，对丢弃部分生成简要摘要插入头部"""
-        keep_count = int(self.config.max_history * 3 / 4)
-        messages = self.context.messages
-        dropped = messages[:-keep_count]
-        kept = messages[-keep_count:]
+        with self.context._msg_lock:
+            keep_count = int(self.config.max_history * 3 / 4)
+            messages = self.context.messages
+            dropped = messages[:-keep_count]
+            kept = messages[-keep_count:]
 
-        self._mark_dropped_for_extraction(dropped)
+            self._mark_dropped_for_extraction(dropped)
 
-        max_summary_len = 300
-        keywords: list[str] = []
-        for msg in dropped:
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            if isinstance(content, str) and content:
-                preview = content[:40].replace("\n", " ").strip()
-                if len(content) > 40:
-                    preview += "…"
-                keywords.append(preview)
+            max_summary_len = 300
+            keywords: list[str] = []
+            for msg in dropped:
+                if msg.get("role") != "user":
+                    continue
+                content = msg.get("content", "")
+                if isinstance(content, str) and content:
+                    preview = content[:40].replace("\n", " ").strip()
+                    if len(content) > 40:
+                        preview += "…"
+                    keywords.append(preview)
 
-        if keywords:
-            header = "[历史背景，非当前任务]\n"
-            body = ""
-            for kw in keywords:
-                candidate = (body + "\n" + kw).strip() if body else kw
-                if len(header) + len(candidate) > max_summary_len:
-                    break
-                body = candidate
-            kept.insert(0, {"role": "system", "content": header + body})
+            if keywords:
+                header = "[历史背景，非当前任务]\n"
+                body = ""
+                for kw in keywords:
+                    candidate = (body + "\n" + kw).strip() if body else kw
+                    if len(header) + len(candidate) > max_summary_len:
+                        break
+                    body = candidate
+                kept.insert(0, {"role": "system", "content": header + body})
 
-        self.context.messages = kept
-        logger.debug(
-            f"Session {self.id}: truncated history — "
-            f"dropped {len(dropped)}, kept {len(kept)} messages"
-        )
+            self.context.messages = kept
+            logger.debug(
+                f"Session {self.id}: truncated history — "
+                f"dropped {len(dropped)}, kept {len(kept)} messages"
+            )
 
     def _mark_dropped_for_extraction(self, dropped: list[dict]) -> None:
         """v2: 将被截断的消息标记为需要提取。
@@ -413,7 +435,7 @@ class Session:
             state=SessionState(data.get("state", "active")),
             created_at=datetime.fromisoformat(data["created_at"]),
             last_active=datetime.fromisoformat(data["last_active"]),
-            context=SessionContext.from_dict(data.get("context", {})),
+            context=SessionContext.from_dict(data.get("context") or {}),
             config=SessionConfig(
                 max_history=config_data.get("max_history", 100),
                 timeout_minutes=config_data.get("timeout_minutes", 30),

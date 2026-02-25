@@ -67,6 +67,7 @@ Use `get_tool_info(tool_name)` to see full parameters before calling.
     # 不在此列表中的分类会自动追加到末尾
     CATEGORY_ORDER = [
         "File System",
+        "Agent",
         "Skills",
         "Memory",
         "Web Search",

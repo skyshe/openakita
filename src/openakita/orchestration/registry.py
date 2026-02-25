@@ -16,6 +16,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from openakita.utils.atomic_io import atomic_json_write
+
 from .messages import AgentInfo, AgentStatus, AgentType
 
 logger = logging.getLogger(__name__)
@@ -512,21 +514,16 @@ class AgentRegistry:
             logger.error(f"Failed to load registry: {e}")
 
     def _save(self) -> None:
-        """保存到文件"""
+        """保存到文件（原子写入）"""
         if not self.storage_path:
             return
 
         try:
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-
             data = {
                 "agents": [a.to_dict() for a in self._agents.values()],
                 "updated_at": datetime.now().isoformat(),
             }
-
-            with open(self.storage_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-
+            atomic_json_write(self.storage_path, data)
         except Exception as e:
             logger.error(f"Failed to save registry: {e}")
 

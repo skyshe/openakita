@@ -351,6 +351,10 @@ class UnifiedMessage:
     # 时间
     timestamp: datetime = field(default_factory=datetime.now)
 
+    # @提及检测
+    is_mentioned: bool = False
+    is_direct_message: bool = False
+
     # 原始数据
     raw: dict = field(default_factory=dict)
 

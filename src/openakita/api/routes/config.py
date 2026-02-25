@@ -106,6 +106,10 @@ class DisabledViewsRequest(BaseModel):
     views: list[str]  # e.g. ["skills", "im", "token_stats", "modules"]
 
 
+class AgentModeRequest(BaseModel):
+    enabled: bool
+
+
 class ListModelsRequest(BaseModel):
     api_type: str  # "openai" | "anthropic"
     base_url: str
@@ -339,6 +343,28 @@ async def write_disabled_views(body: DisabledViewsRequest):
     )
     logger.info(f"[Config API] Updated disabled_views: {body.views}")
     return {"status": "ok", "disabled_views": body.views}
+
+
+@router.get("/api/config/agent-mode")
+async def read_agent_mode():
+    """返回多Agent模式开关状态"""
+    from openakita.config import settings
+
+    return {"multi_agent_enabled": settings.multi_agent_enabled}
+
+
+@router.post("/api/config/agent-mode")
+async def write_agent_mode(body: AgentModeRequest):
+    """切换多Agent模式（Beta）。修改立即生效并持久化。"""
+    from openakita.config import runtime_state, settings
+
+    old = settings.multi_agent_enabled
+    settings.multi_agent_enabled = body.enabled
+    runtime_state.save()
+    logger.info(
+        f"[Config API] multi_agent_enabled: {old} -> {body.enabled}"
+    )
+    return {"status": "ok", "multi_agent_enabled": body.enabled}
 
 
 @router.get("/api/config/providers")

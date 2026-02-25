@@ -70,14 +70,21 @@ class OneBotAdapter(ChannelAdapter):
         ws_url: str = "ws://127.0.0.1:8080",
         access_token: str | None = None,
         media_dir: Path | None = None,
+        *,
+        channel_name: str | None = None,
+        bot_id: str | None = None,
+        agent_profile_id: str = "default",
     ):
         """
         Args:
             ws_url: OneBot WebSocket 地址
             access_token: 访问令牌（可选）
             media_dir: 媒体文件存储目录
+            channel_name: 通道名称（多Bot时用于区分实例）
+            bot_id: Bot 实例唯一标识
+            agent_profile_id: 绑定的 agent profile ID
         """
-        super().__init__()
+        super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
         self.config = OneBotConfig(
             ws_url=ws_url,
@@ -213,6 +220,19 @@ class OneBotAdapter(ChannelAdapter):
             chat_type = "group"
             chat_id = str(data.get("group_id"))
 
+        is_direct_message = message_type == "private"
+
+        # 检测 @机器人：检查消息段中是否有 at 指向 self_id
+        is_mentioned = False
+        bot_id = str(data.get("self_id", ""))
+        if isinstance(raw_message, list):
+            for seg in raw_message:
+                if seg.get("type") == "at":
+                    qq = str(seg.get("data", {}).get("qq", ""))
+                    if qq == bot_id or qq == "all":
+                        is_mentioned = True
+                        break
+
         sender = data.get("sender", {})
         user_id = str(data.get("user_id"))
 
@@ -224,6 +244,8 @@ class OneBotAdapter(ChannelAdapter):
             chat_id=chat_id,
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             raw=data,
             metadata={
                 "nickname": sender.get("nickname"),

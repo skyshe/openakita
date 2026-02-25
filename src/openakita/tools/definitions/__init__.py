@@ -53,6 +53,7 @@ from .scheduled import SCHEDULED_TOOLS
 from .skills import SKILLS_TOOLS
 from .sticker import STICKER_TOOLS
 from .system import SYSTEM_TOOLS
+from .agent import AGENT_TOOLS
 from .web_search import WEB_SEARCH_TOOLS
 
 # 合并所有工具定义
@@ -90,6 +91,7 @@ __all__ = [
     "filter_tools_by_category",
     # 工具列表
     "BASE_TOOLS",
+    "AGENT_TOOLS",
     "BROWSER_TOOLS",
     "FILESYSTEM_TOOLS",
     "SKILLS_TOOLS",

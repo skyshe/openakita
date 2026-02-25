@@ -78,6 +78,10 @@ class QQBotAdapter(ChannelAdapter):
         webhook_port: int = 9890,
         webhook_path: str = "/qqbot/callback",
         media_dir: Path | None = None,
+        *,
+        channel_name: str | None = None,
+        bot_id: str | None = None,
+        agent_profile_id: str = "default",
     ):
         """
         Args:
@@ -88,8 +92,11 @@ class QQBotAdapter(ChannelAdapter):
             webhook_port: Webhook 回调服务端口（仅 webhook 模式）
             webhook_path: Webhook 回调路径（仅 webhook 模式）
             media_dir: 媒体文件存储目录
+            channel_name: 通道名称（多Bot时用于区分实例）
+            bot_id: Bot 实例唯一标识
+            agent_profile_id: 绑定的 agent profile ID
         """
-        super().__init__()
+        super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
         self.app_id = app_id
         self.app_secret = app_secret
@@ -423,6 +430,8 @@ class QQBotAdapter(ChannelAdapter):
             chat_id=group_openid,
             content=content,
             chat_type="group",
+            is_mentioned=True,
+            is_direct_message=False,
             raw={"event_id": data.get("event_id")},
             metadata={
                 "chat_type": "group",
@@ -452,6 +461,8 @@ class QQBotAdapter(ChannelAdapter):
             chat_id=user_openid,
             content=content,
             chat_type="private",
+            is_mentioned=False,
+            is_direct_message=True,
             raw={"event_id": data.get("event_id")},
             metadata={
                 "chat_type": "c2c",
@@ -483,6 +494,8 @@ class QQBotAdapter(ChannelAdapter):
             chat_id=channel_id,
             content=content,
             chat_type="group",
+            is_mentioned=True,
+            is_direct_message=False,
             raw={"event_id": data.get("event_id")},
             metadata={
                 "chat_type": "channel",
@@ -631,6 +644,8 @@ class QQBotAdapter(ChannelAdapter):
             chat_id=group_openid,
             content=content,
             chat_type="group",
+            is_mentioned=True,
+            is_direct_message=False,
             raw={"event_id": getattr(message, "event_id", None)},
             metadata={
                 "chat_type": "group",
@@ -663,6 +678,8 @@ class QQBotAdapter(ChannelAdapter):
             chat_id=user_openid,
             content=content,
             chat_type="private",
+            is_mentioned=False,
+            is_direct_message=True,
             raw={"event_id": getattr(message, "event_id", None)},
             metadata={
                 "chat_type": "c2c",
@@ -698,6 +715,8 @@ class QQBotAdapter(ChannelAdapter):
             chat_id=channel_id,
             content=content,
             chat_type="group",
+            is_mentioned=True,
+            is_direct_message=False,
             raw={"event_id": getattr(message, "event_id", None)},
             metadata={
                 "chat_type": "channel",

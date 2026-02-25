@@ -383,6 +383,7 @@ class ReasoningEngine:
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
         progress_callback: Any = None,
+        agent_profile_id: str = "default",
     ) -> str:
         """
         主推理循环: Reason -> Act -> Observe。
@@ -601,6 +602,7 @@ class ReasoningEngine:
                     thinking_mode=thinking_mode,
                     thinking_depth=thinking_depth,
                     iteration=iteration,
+                    agent_profile_id=agent_profile_id,
                 )
 
                 if task_monitor:
@@ -1106,6 +1108,8 @@ class ReasoningEngine:
         conversation_id: str | None = None,
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
+        agent_profile_id: str = "default",
+        session: Any = None,
     ):
         """
         流式推理循环，为 HTTP API (SSE) 设计。
@@ -1345,6 +1349,7 @@ class ReasoningEngine:
                         thinking_mode=thinking_mode,
                         thinking_depth=thinking_depth,
                         iteration=_iteration,
+                        agent_profile_id=agent_profile_id,
                     ):
                         if hb_event["type"] == "heartbeat":
                             yield {"type": "heartbeat"}
@@ -1706,6 +1711,11 @@ class ReasoningEngine:
                             result_text = f"Tool error: {exc}"
 
                         _tool_is_error = result_text.startswith("Tool error:")
+                        # Emit agent_handoff events from session.context.handoff_events (set by orchestrator.delegate)
+                        if session and hasattr(session, "context") and hasattr(session.context, "handoff_events"):
+                            for h in session.context.handoff_events:
+                                yield {"type": "agent_handoff", "from_agent": h.get("from_agent", ""), "to_agent": h.get("to_agent", ""), "reason": h.get("reason", "")}
+                            session.context.handoff_events.clear()
                         # 跳过时发送 tool_call_skipped 事件通知前端
                         if _stream_skipped:
                             yield {"type": "tool_call_end", "tool": tool_name, "result": result_text[:_SSE_RESULT_PREVIEW_CHARS], "id": tool_id, "skipped": True, "is_error": False}
@@ -2353,6 +2363,7 @@ class ReasoningEngine:
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
         iteration: int = 0,
+        agent_profile_id: str = "default",
     ):
         """
         包装 _reason()，在等待 LLM 响应期间每隔 HEARTBEAT_INTERVAL 秒
@@ -2384,6 +2395,7 @@ class ReasoningEngine:
                     thinking_mode=thinking_mode,
                     thinking_depth=thinking_depth,
                     iteration=iteration,
+                    agent_profile_id=agent_profile_id,
                 )
                 await queue.put(("result", decision))
             except Exception as exc:
@@ -2448,6 +2460,7 @@ class ReasoningEngine:
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
         iteration: int = 0,
+        agent_profile_id: str = "default",
     ) -> Decision:
         """
         推理阶段: 调用 LLM，返回结构化 Decision。
@@ -2467,6 +2480,7 @@ class ReasoningEngine:
                 operation_type="chat_react_iteration",
                 channel="api",
                 iteration=iteration,
+                agent_profile_id=agent_profile_id,
             ))
             try:
                 response = await self._brain.messages_create_async(

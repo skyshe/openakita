@@ -252,6 +252,8 @@ export type ChatAttachment = {
   mimeType?: string;
 };
 
+export type ConversationStatus = "idle" | "running" | "completed" | "error";
+
 export type ChatConversation = {
   id: string;
   title: string;
@@ -260,6 +262,8 @@ export type ChatConversation = {
   messageCount: number;
   pinned?: boolean;
   titleGenerated?: boolean;
+  agentProfileId?: string;
+  status?: ConversationStatus;
 };
 
 // ─── Slash commands ───

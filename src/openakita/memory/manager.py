@@ -35,7 +35,7 @@ from .retrieval import RetrievalEngine
 from .search_backends import create_search_backend
 from .types import (
     Attachment, AttachmentDirection, ConversationTurn, Episode,
-    Memory, MemoryPriority, MemoryType, SemanticMemory,
+    Memory, MemoryPriority, MemoryScope, MemoryType, SemanticMemory,
 )
 from .unified_store import UnifiedStore
 from .vector_store import VectorStore
@@ -687,7 +687,9 @@ class MemoryManager:
                 return content[len(prefix):]
         return content
 
-    def add_memory(self, memory: Memory) -> str:
+    def add_memory(
+        self, memory: Memory, scope: str = "global", scope_owner: str = ""
+    ) -> str:
         """添加记忆 (v1 compat: writes to both v1 and v2 stores)"""
         with self._memories_lock:
             existing = list(self._memories.values())
@@ -734,7 +736,7 @@ class MemoryManager:
         )
         if hasattr(memory, "expires_at"):
             sem.expires_at = memory.expires_at
-        self.store.save_semantic(sem)
+        self.store.save_semantic(sem, scope=scope, scope_owner=scope_owner)
 
         logger.debug(f"Added memory: {memory.id} - {memory.content}")
         return memory.id
@@ -753,10 +755,17 @@ class MemoryManager:
         memory_type: MemoryType | None = None,
         tags: list[str] | None = None,
         limit: int = 10,
+        scope: str = "global",
+        scope_owner: str = "",
     ) -> list[Memory]:
         results = []
         with self._memories_lock:
             for memory in self._memories.values():
+                if scope != "global" or scope_owner:
+                    mem_scope = getattr(memory, "scope", "global") or "global"
+                    mem_owner = getattr(memory, "scope_owner", "") or ""
+                    if mem_scope != scope or mem_owner != scope_owner:
+                        continue
                 if memory_type and memory.type != memory_type:
                     continue
                 if tags and not any(tag in memory.tags for tag in tags):
@@ -780,7 +789,13 @@ class MemoryManager:
 
     # ==================== Injection (v1 compat) ====================
 
-    def get_injection_context(self, task_description: str = "", max_related: int = 5) -> str:
+    def get_injection_context(
+        self,
+        task_description: str = "",
+        max_related: int = 5,
+        scope: str = "global",
+        scope_owner: str = "",
+    ) -> str:
         """v1 compat — prefer using builder.py's three-layer injection"""
         return self.retrieval_engine.retrieve(
             query=task_description,
@@ -788,8 +803,13 @@ class MemoryManager:
             max_tokens=700,
         )
 
-    async def get_injection_context_async(self, task_description: str = "") -> str:
-        return await asyncio.to_thread(self.get_injection_context, task_description)
+    async def get_injection_context_async(
+        self, task_description: str = "", scope: str = "global", scope_owner: str = ""
+    ) -> str:
+        return await asyncio.to_thread(
+            self.get_injection_context, task_description,
+            scope=scope, scope_owner=scope_owner,
+        )
 
     def _keyword_search(self, query: str, limit: int = 5) -> list[Memory]:
         keywords = [kw for kw in query.lower().split() if len(kw) > 2]
@@ -932,19 +952,27 @@ class MemoryManager:
 
     # ==================== Stats ====================
 
-    def get_stats(self) -> dict:
+    def get_stats(
+        self, scope: str = "global", scope_owner: str = ""
+    ) -> dict:
         type_counts: dict[str, int] = {}
         priority_counts: dict[str, int] = {}
         for memory in self._memories.values():
+            if scope != "global" or scope_owner:
+                mem_scope = getattr(memory, "scope", "global") or "global"
+                mem_owner = getattr(memory, "scope_owner", "") or ""
+                if mem_scope != scope or mem_owner != scope_owner:
+                    continue
             type_counts[memory.type.value] = type_counts.get(memory.type.value, 0) + 1
             priority_counts[memory.priority.value] = (
                 priority_counts.get(memory.priority.value, 0) + 1
             )
 
-        v2_stats = self.store.get_stats()
+        v2_stats = self.store.get_stats(scope=scope, scope_owner=scope_owner)
 
+        total = sum(type_counts.values())
         return {
-            "total": len(self._memories),
+            "total": total,
             "by_type": type_counts,
             "by_priority": priority_counts,
             "sessions_today": len(self.consolidator.get_today_sessions()),

@@ -32,6 +32,7 @@ class TokenTrackingContext:
     channel: str = ""
     user_id: str = ""
     iteration: int = 0
+    agent_profile_id: str = "default"
 
 
 _tracking_ctx: contextvars.ContextVar[TokenTrackingContext | None] = contextvars.ContextVar(
@@ -102,6 +103,7 @@ def record_usage(
         "iteration": ctx.iteration if ctx else 0,
         "channel": ctx.channel if ctx else "",
         "user_id": ctx.user_id if ctx else "",
+        "agent_profile_id": ctx.agent_profile_id if ctx else "default",
         "estimated_cost": estimated_cost,
     })
 
@@ -112,14 +114,14 @@ _INSERT_SQL = """
 INSERT INTO token_usage (
     session_id, endpoint_name, model, operation_type, operation_detail,
     input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens,
-    context_tokens, iteration, channel, user_id, estimated_cost
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    context_tokens, iteration, channel, user_id, agent_profile_id, estimated_cost
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 _COLUMN_ORDER = (
     "session_id", "endpoint_name", "model", "operation_type", "operation_detail",
     "input_tokens", "output_tokens", "cache_creation_tokens", "cache_read_tokens",
-    "context_tokens", "iteration", "channel", "user_id", "estimated_cost",
+    "context_tokens", "iteration", "channel", "user_id", "agent_profile_id", "estimated_cost",
 )
 
 
@@ -146,6 +148,7 @@ def _writer_loop(db_path: str) -> None:
                 iteration INTEGER DEFAULT 0,
                 channel TEXT,
                 user_id TEXT,
+                agent_profile_id TEXT DEFAULT 'default',
                 estimated_cost REAL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(timestamp);
@@ -155,6 +158,12 @@ def _writer_loop(db_path: str) -> None:
         # Migration: 为旧数据库添加 estimated_cost 列
         try:
             conn.execute("ALTER TABLE token_usage ADD COLUMN estimated_cost REAL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            pass  # 列已存在则忽略
+        # Migration: 为旧数据库添加 agent_profile_id 列
+        try:
+            conn.execute("ALTER TABLE token_usage ADD COLUMN agent_profile_id TEXT DEFAULT 'default'")
             conn.commit()
         except Exception:
             pass  # 列已存在则忽略

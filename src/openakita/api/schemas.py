@@ -23,6 +23,10 @@ class ChatRequest(BaseModel):
         None,
         description="Thinking depth: 'low', 'medium', 'high'. Only effective when thinking is enabled.",
     )
+    agent_profile_id: str | None = Field(
+        None,
+        description="Agent profile to use for this message. Only effective when multi_agent_enabled is True.",
+    )
 
 
 class AttachmentInfo(BaseModel):

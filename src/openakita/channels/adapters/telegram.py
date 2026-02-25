@@ -271,6 +271,10 @@ class TelegramAdapter(ChannelAdapter):
         pairing_code: str | None = None,
         require_pairing: bool = True,
         proxy: str | None = None,
+        *,
+        channel_name: str | None = None,
+        bot_id: str | None = None,
+        agent_profile_id: str = "default",
     ):
         """
         Args:
@@ -280,8 +284,11 @@ class TelegramAdapter(ChannelAdapter):
             pairing_code: 配对码（可选，不提供则自动生成）
             require_pairing: 是否需要配对验证（默认 True）
             proxy: 代理地址（可选，不提供则自动检测）
+            channel_name: 通道名称（多Bot时用于区分实例）
+            bot_id: Bot 实例唯一标识
+            agent_profile_id: 绑定的 agent profile ID
         """
-        super().__init__()
+        super().__init__(channel_name=channel_name, bot_id=bot_id, agent_profile_id=agent_profile_id)
 
         self.bot_token = bot_token
         self.webhook_url = webhook_url
@@ -661,6 +668,27 @@ class TelegramAdapter(ChannelAdapter):
         elif chat.type == "channel":
             chat_type = "channel"
 
+        is_direct_message = chat_type == "private"
+
+        # 检测 @机器人 提及
+        is_mentioned = False
+        bot_username = getattr(self._bot, "username", None) if self._bot else None
+        if bot_username:
+            for entities, text_source in [
+                (message.entities, message.text),
+                (message.caption_entities, message.caption),
+            ]:
+                if not entities or not text_source:
+                    continue
+                for entity in entities:
+                    if entity.type == "mention":
+                        mention = text_source[entity.offset : entity.offset + entity.length]
+                        if mention.lower() == f"@{bot_username.lower()}":
+                            is_mentioned = True
+                            break
+                if is_mentioned:
+                    break
+
         return UnifiedMessage.create(
             channel=self.channel_name,
             channel_message_id=str(message.message_id),
@@ -669,6 +697,8 @@ class TelegramAdapter(ChannelAdapter):
             chat_id=str(chat.id),
             content=content,
             chat_type=chat_type,
+            is_mentioned=is_mentioned,
+            is_direct_message=is_direct_message,
             reply_to=str(message.reply_to_message.message_id) if message.reply_to_message else None,
             raw={
                 "message_id": message.message_id,

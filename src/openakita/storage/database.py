@@ -216,6 +216,7 @@ class Database:
                 iteration INTEGER DEFAULT 0,
                 channel TEXT,
                 user_id TEXT,
+                agent_profile_id TEXT DEFAULT 'default',
                 estimated_cost REAL DEFAULT 0
             );
 
@@ -230,6 +231,14 @@ class Database:
         try:
             await self._connection.execute(
                 "ALTER TABLE token_usage ADD COLUMN estimated_cost REAL DEFAULT 0"
+            )
+            await self._connection.commit()
+        except Exception:
+            pass  # 列已存在则忽略
+        # Migration: 为旧数据库添加 agent_profile_id 列
+        try:
+            await self._connection.execute(
+                "ALTER TABLE token_usage ADD COLUMN agent_profile_id TEXT DEFAULT 'default'"
             )
             await self._connection.commit()
         except Exception:
@@ -559,7 +568,7 @@ class Database:
         operation_type: str | None = None,
     ) -> list[dict]:
         """按维度聚合 token 用量"""
-        allowed = {"endpoint_name", "operation_type", "model", "session_id", "channel"}
+        allowed = {"endpoint_name", "operation_type", "model", "session_id", "channel", "agent_profile_id"}
         if group_by not in allowed:
             group_by = "endpoint_name"
 
@@ -681,3 +690,47 @@ class Database:
         cursor = await self._connection.execute(sql, (s, e))
         row = await cursor.fetchone()
         return dict(row) if row else {}
+
+    async def get_token_usage_by_agent(
+        self,
+        start_time: str | datetime,
+        end_time: str | datetime,
+    ) -> dict[str, dict]:
+        """按 agent_profile_id 聚合 token 用量，用于多 Agent 模式统计。"""
+        sql = """
+            SELECT COALESCE(agent_profile_id, 'default') AS agent_profile_id,
+                   COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                   COUNT(*) AS request_count,
+                   COALESCE(SUM(estimated_cost), 0) AS total_cost
+            FROM token_usage
+            WHERE timestamp >= ? AND timestamp <= ?
+            GROUP BY COALESCE(agent_profile_id, 'default')
+            ORDER BY total_tokens DESC
+        """
+        s = start_time if isinstance(start_time, str) else start_time.strftime("%Y-%m-%d %H:%M:%S")
+        e = end_time if isinstance(end_time, str) else end_time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            cursor = await self._connection.execute(sql, (s, e))
+            rows = await cursor.fetchall()
+        except Exception:
+            # 兼容旧库无 agent_profile_id 列
+            sql_fallback = """
+                SELECT 'default' AS agent_profile_id,
+                       COALESCE(SUM(input_tokens), 0) AS input_tokens,
+                       COALESCE(SUM(output_tokens), 0) AS output_tokens,
+                       COALESCE(SUM(input_tokens + output_tokens), 0) AS total_tokens,
+                       COUNT(*) AS request_count,
+                       COALESCE(SUM(estimated_cost), 0) AS total_cost
+                FROM token_usage
+                WHERE timestamp >= ? AND timestamp <= ?
+            """
+            cursor = await self._connection.execute(sql_fallback, (s, e))
+            rows = await cursor.fetchall()
+        result: dict[str, dict] = {}
+        for row in rows:
+            d = dict(row)
+            agent_id = d.pop("agent_profile_id", "default")
+            result[agent_id] = d
+        return result

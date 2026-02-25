@@ -10,6 +10,7 @@ Agent 状态管理模块
 
 import asyncio
 import logging
+import threading
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -284,6 +285,7 @@ class AgentState:
 
     def __init__(self) -> None:
         self._tasks: dict[str, TaskState] = {}
+        self._tasks_lock = threading.RLock()
         self._last_task_key: str = ""
 
         self.interrupt_enabled: bool = True
@@ -296,27 +298,30 @@ class AgentState:
     @property
     def current_task(self) -> TaskState | None:
         """向后兼容：返回最近创建 / 唯一的任务"""
-        if self._last_task_key and self._last_task_key in self._tasks:
-            return self._tasks[self._last_task_key]
-        if len(self._tasks) == 1:
-            return next(iter(self._tasks.values()))
-        return None
+        with self._tasks_lock:
+            if self._last_task_key and self._last_task_key in self._tasks:
+                return self._tasks[self._last_task_key]
+            if len(self._tasks) == 1:
+                return next(iter(self._tasks.values()))
+            return None
 
     @current_task.setter
     def current_task(self, value: TaskState | None) -> None:
         """向后兼容：直接赋值（仅用于旧代码 / reset_task）"""
-        if value is None:
-            if self._last_task_key in self._tasks:
-                self._tasks.pop(self._last_task_key, None)
-            self._last_task_key = ""
-        else:
-            key = value.session_id or value.task_id
-            self._tasks[key] = value
-            self._last_task_key = key
+        with self._tasks_lock:
+            if value is None:
+                if self._last_task_key in self._tasks:
+                    self._tasks.pop(self._last_task_key, None)
+                self._last_task_key = ""
+            else:
+                key = value.session_id or value.task_id
+                self._tasks[key] = value
+                self._last_task_key = key
 
     def get_task_for_session(self, session_id: str) -> TaskState | None:
         """获取指定会话的任务"""
-        return self._tasks.get(session_id)
+        with self._tasks_lock:
+            return self._tasks.get(session_id)
 
     def begin_task(
         self,
@@ -340,29 +345,31 @@ class AgentState:
         _tid = task_id or str(uuid.uuid4())
         key = session_id or _tid
 
-        old = self._tasks.get(key)
-        if old:
-            old_status = old.status.value
-            old_cancelled = old.cancelled
-            if old.is_active:
-                logger.warning(
-                    f"[State] Starting new task while previous task {old.task_id[:8]} "
-                    f"is still {old_status} (session={key}). Force resetting."
-                )
-            else:
-                logger.info(
-                    f"[State] Cleaning up previous task {old.task_id[:8]} "
-                    f"(status={old_status}, cancelled={old_cancelled}) before new task"
-                )
-            self._tasks.pop(key, None)
+        with self._tasks_lock:
+            old = self._tasks.get(key)
+            if old:
+                old_status = old.status.value
+                old_cancelled = old.cancelled
+                if old.is_active:
+                    logger.warning(
+                        f"[State] Starting new task while previous task {old.task_id[:8]} "
+                        f"is still {old_status} (session={key}). Force resetting."
+                    )
+                else:
+                    logger.info(
+                        f"[State] Cleaning up previous task {old.task_id[:8]} "
+                        f"(status={old_status}, cancelled={old_cancelled}) before new task"
+                    )
+                self._tasks.pop(key, None)
 
-        task = TaskState(
-            task_id=_tid,
-            session_id=session_id,
-            conversation_id=conversation_id,
-        )
-        self._tasks[key] = task
-        self._last_task_key = key
+            task = TaskState(
+                task_id=_tid,
+                session_id=session_id,
+                conversation_id=conversation_id,
+            )
+            self._tasks[key] = task
+            self._last_task_key = key
+
         logger.info(
             f"[State] New task created: {task.task_id[:8]} "
             f"(session={key}, cancelled={task.cancelled})"
@@ -372,56 +379,60 @@ class AgentState:
     def reset_task(self, session_id: str | None = None) -> None:
         """重置任务状态（任务结束后调用）"""
         session_id = session_id or None
-        if session_id and session_id in self._tasks:
-            task = self._tasks.pop(session_id)
-            logger.debug(
-                f"[State] Task {task.task_id[:8]} reset "
-                f"(was {task.status.value}, session={session_id})"
-            )
-            if self._last_task_key == session_id:
-                self._last_task_key = ""
-        elif not session_id:
-            task = self.current_task
-            if task:
-                key = task.session_id or task.task_id
-                self._tasks.pop(key, None)
-                if self._last_task_key == key:
-                    self._last_task_key = ""
+        with self._tasks_lock:
+            if session_id and session_id in self._tasks:
+                task = self._tasks.pop(session_id)
                 logger.debug(
                     f"[State] Task {task.task_id[:8]} reset "
-                    f"(was {task.status.value}, key={key})"
+                    f"(was {task.status.value}, session={session_id})"
                 )
+                if self._last_task_key == session_id:
+                    self._last_task_key = ""
+            elif not session_id:
+                task = self.current_task
+                if task:
+                    key = task.session_id or task.task_id
+                    self._tasks.pop(key, None)
+                    if self._last_task_key == key:
+                        self._last_task_key = ""
+                    logger.debug(
+                        f"[State] Task {task.task_id[:8]} reset "
+                        f"(was {task.status.value}, key={key})"
+                    )
         self.current_task_monitor = None
 
     def cancel_task(self, reason: str = "用户请求停止", session_id: str | None = None) -> None:
         """取消任务。如果指定 session_id，仅取消该会话的任务。"""
         session_id = session_id or None
-        if session_id:
-            task = self._tasks.get(session_id)
-            if task:
-                task.cancel(reason)
-                logger.info(
-                    f"[State] Cancelled task {task.task_id[:8]} for session {session_id}"
-                )
-            else:
-                logger.warning(
-                    f"[State] cancel_task: no task found for session {session_id}, "
-                    f"active sessions: {list(self._tasks.keys())}"
-                )
-        elif self.current_task:
-            self.current_task.cancel(reason)
+        with self._tasks_lock:
+            if session_id:
+                task = self._tasks.get(session_id)
+                if task:
+                    task.cancel(reason)
+                    logger.info(
+                        f"[State] Cancelled task {task.task_id[:8]} for session {session_id}"
+                    )
+                else:
+                    logger.warning(
+                        f"[State] cancel_task: no task found for session {session_id}, "
+                        f"active sessions: {list(self._tasks.keys())}"
+                    )
+            elif self.current_task:
+                self.current_task.cancel(reason)
 
     def skip_current_step(self, reason: str = "用户请求跳过当前步骤", session_id: str | None = None) -> None:
         """跳过当前正在执行的步骤（不终止任务）"""
         session_id = session_id or None
-        task = self._tasks.get(session_id) if session_id else self.current_task
+        with self._tasks_lock:
+            task = self._tasks.get(session_id) if session_id else self.current_task
         if task:
             task.request_skip(reason)
 
     async def insert_user_message(self, text: str, session_id: str | None = None) -> None:
         """向任务注入用户消息"""
         session_id = session_id or None
-        task = self._tasks.get(session_id) if session_id else self.current_task
+        with self._tasks_lock:
+            task = self._tasks.get(session_id) if session_id else self.current_task
         if task:
             await task.add_user_insert(text)
 

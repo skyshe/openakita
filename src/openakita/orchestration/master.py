@@ -10,6 +10,7 @@ MasterAgent - 主协调器
 """
 
 import asyncio
+import warnings
 import contextlib
 import logging
 import multiprocessing
@@ -77,6 +78,11 @@ class MasterAgent:
             health_check_interval: 健康检查间隔（秒）
             data_dir: 数据目录
         """
+        warnings.warn(
+            "MasterAgent is deprecated. Use AgentOrchestrator instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.agent_id = agent_id
         self.bus_config = bus_config or BusConfig()
         self.min_workers = min_workers

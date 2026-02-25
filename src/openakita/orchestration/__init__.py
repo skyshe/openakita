@@ -46,6 +46,17 @@
     └──────────┘ └──────────┘ └──────────┘
 """
 
+import warnings
+
+warnings.warn(
+    "openakita.orchestration is deprecated and will be removed in a future version. "
+    "Use openakita.agents for multi-agent functionality.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+__deprecated__ = True
+
 from .bus import AgentBus, BusConfig
 from .handoff import HandoffAgent, HandoffOrchestrator, HandoffTarget
 from .master import MasterAgent

@@ -8,6 +8,7 @@ Agent 通信总线
 """
 
 import asyncio
+import warnings
 import logging
 import threading
 from collections.abc import Awaitable, Callable
@@ -74,6 +75,11 @@ class AgentBus:
             config: 总线配置
             is_master: 是否是主进程端
         """
+        warnings.warn(
+            "AgentBus is deprecated. Use asyncio.Queue-based communication instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         if not HAS_ZMQ:
             raise ImportError(_ZMQ_HINT)
 

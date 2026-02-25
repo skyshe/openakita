@@ -13,6 +13,8 @@ import { TokenStatsView } from "./views/TokenStatsView";
 import { MCPView } from "./views/MCPView";
 import { SchedulerView } from "./views/SchedulerView";
 import { MemoryView } from "./views/MemoryView";
+import { AgentDashboardView } from "./views/AgentDashboardView";
+import { AgentManagerView } from "./views/AgentManagerView";
 import { FeedbackModal } from "./views/FeedbackModal";
 import type { EndpointSummary as EndpointSummaryType } from "./types";
 import {
@@ -22,7 +24,7 @@ import {
   IconEdit, IconTrash, IconEye, IconEyeOff, IconInfo, IconClipboard,
   DotGreen, DotGray, DotYellow, DotRed,
   IconBook, IconZap, IconGear, IconMoon, IconSun, IconLaptop, IconPlug, IconCalendar,
-  IconBug, IconBrain, IconGitHub, IconGitee,
+  IconBug, IconBrain, IconGitHub, IconGitee, IconUsers, IconBot,
   LogoTelegram, LogoFeishu, LogoWework, LogoDingtalk, LogoQQ,
 } from "./icons";
 import logoUrl from "./assets/logo.png";
@@ -927,7 +929,7 @@ export function App() {
     [configMode, t],
   );
 
-  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory">("wizard");
+  const [view, setView] = useState<"wizard" | "status" | "chat" | "skills" | "im" | "onboarding" | "modules" | "token_stats" | "mcp" | "scheduler" | "memory" | "dashboard" | "agent_manager">("wizard");
   const [appInitializing, setAppInitializing] = useState(true); // 首次加载检测中，防止闪烁
   const [configExpanded, setConfigExpanded] = useState(true);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -9545,6 +9547,24 @@ export function App() {
         </div>
       );
     }
+    if (view === "dashboard") {
+      return (
+        <AgentDashboardView
+          apiBaseUrl={apiBaseUrl}
+          visible={view === "dashboard"}
+          multiAgentEnabled={multiAgentEnabled}
+        />
+      );
+    }
+    if (view === "agent_manager") {
+      return (
+        <AgentManagerView
+          apiBaseUrl={apiBaseUrl}
+          visible={view === "agent_manager"}
+          multiAgentEnabled={multiAgentEnabled}
+        />
+      );
+    }
     if (view === "modules") {
       return (
         <div>
@@ -9798,6 +9818,16 @@ export function App() {
           <div className={`navItem ${view === "token_stats" ? "navItemActive" : ""}`} onClick={() => setView("token_stats")} role="button" tabIndex={0} title={t("sidebar.tokenStats", "Token 统计")} style={disabledViews.includes("token_stats") ? { opacity: 0.4 } : undefined}>
             <IconZap size={16} /> {!sidebarCollapsed && <span>{t("sidebar.tokenStats", "Token 统计")}</span>}
           </div>
+          {multiAgentEnabled && (
+            <div className={`navItem ${view === "dashboard" ? "navItemActive" : ""}`} onClick={() => setView("dashboard")} role="button" tabIndex={0} title={t("sidebar.dashboard")}>
+              <IconUsers size={16} /> {!sidebarCollapsed && <span>{t("sidebar.dashboard")} <sup style={{ fontSize: 9, color: "var(--primary, #3b82f6)", fontWeight: 600 }}>Beta</sup></span>}
+            </div>
+          )}
+          {multiAgentEnabled && (
+            <div className={`navItem ${view === "agent_manager" ? "navItemActive" : ""}`} onClick={() => setView("agent_manager")} role="button" tabIndex={0} title={t("sidebar.agentManager")}>
+              <IconBot size={16} /> {!sidebarCollapsed && <span>{t("sidebar.agentManager")}</span>}
+            </div>
+          )}
         </div>
 
         {/* Collapsible Config section */}

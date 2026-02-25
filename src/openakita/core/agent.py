@@ -59,6 +59,7 @@ from ..tools.handlers.scheduled import create_handler as create_scheduled_handle
 from ..tools.handlers.skills import create_handler as create_skills_handler
 from ..tools.handlers.sticker import create_handler as create_sticker_handler
 from ..tools.handlers.system import create_handler as create_system_handler
+from ..tools.handlers.agent import create_handler as create_agent_tool_handler
 from ..tools.handlers.web_search import create_handler as create_web_search_handler
 
 # MCP 系统
@@ -269,6 +270,9 @@ class Agent:
         _all_tools = list(BASE_TOOLS)
         if _DESKTOP_AVAILABLE:
             _all_tools.extend(DESKTOP_TOOLS)
+        if settings.multi_agent_enabled:
+            from ..tools.definitions.agent import AGENT_TOOLS
+            _all_tools.extend(AGENT_TOOLS)
         self.tool_catalog = ToolCatalog(_all_tools)
 
         # 定时任务调度器
@@ -338,6 +342,12 @@ class Agent:
             self._tools.extend(DESKTOP_TOOLS)
             logger.info(f"Desktop automation tools enabled ({len(DESKTOP_TOOLS)} tools)")
 
+        # Multi-agent tools (only when enabled)
+        if settings.multi_agent_enabled:
+            from ..tools.definitions.agent import AGENT_TOOLS
+            self._tools.extend(AGENT_TOOLS)
+            logger.info(f"Multi-agent tools enabled ({len(AGENT_TOOLS)} tools)")
+
         self._update_shell_tool_description()
 
         # 对话上下文
@@ -358,6 +368,10 @@ class Agent:
         self._initialized = False
         self._running = False
         self._last_finalized_trace: list[dict] = []
+
+        # Agent profile and custom prompt (set by AgentFactory)
+        self._agent_profile = None
+        self._custom_prompt_suffix: str = ""
 
         # Handler Registry（模块化工具执行）
         self.handler_registry = SystemHandlerRegistry()
@@ -931,6 +945,14 @@ class Agent:
                     "desktop_wait",
                     "desktop_inspect",
                 ],
+            )
+
+        # Multi-agent tools (only when multi_agent_enabled)
+        if settings.multi_agent_enabled:
+            self.handler_registry.register(
+                "agent",
+                create_agent_tool_handler(self),
+                ["delegate_to_agent", "create_agent"],
             )
 
         logger.info(
@@ -1722,7 +1744,7 @@ MCP (Model Context Protocol) 连接外部服务，**工具定义已全量展示*
 **记住：这三类都是工具，都可以调用，不要说"我没有这个能力"！**
 """
 
-        return f"""{base_prompt}
+        prompt = f"""{base_prompt}
 
 {system_info}
 {skill_catalog}
@@ -1937,13 +1959,23 @@ search_github → install_skill → 使用
 
 **用户信任比看起来厉害更重要！宁可说"我做不到"也不要骗人！**
 {profile_prompt}"""
+        
+        if self._custom_prompt_suffix:
+            prompt = prompt + f"\n\n{self._custom_prompt_suffix}"
+
+        prompt += self._build_multi_agent_prompt_section()
+        
+        return prompt
 
     def _build_system_prompt_compiled_sync(self, task_description: str = "", session_type: str = "cli") -> str:
         """同步版本：启动时构建初始系统提示词（此时事件循环可能未就绪）"""
-        # 委托给 PromptAssembler
-        return self.prompt_assembler._build_compiled_sync(
+        prompt = self.prompt_assembler._build_compiled_sync(
             task_description, session_type=session_type
         )
+        if self._custom_prompt_suffix:
+            prompt += f"\n\n{self._custom_prompt_suffix}"
+        prompt += self._build_multi_agent_prompt_section()
+        return prompt
 
     async def _build_system_prompt_compiled(self, task_description: str = "", session_type: str = "cli") -> str:
         """
@@ -1959,10 +1991,153 @@ search_github → install_skill → 使用
         Returns:
             编译后的系统提示词
         """
-        # 委托给 PromptAssembler
-        return await self.prompt_assembler.build_system_prompt_compiled(
+        prompt = await self.prompt_assembler.build_system_prompt_compiled(
             task_description, session_type=session_type
         )
+        if self._custom_prompt_suffix:
+            prompt += f"\n\n{self._custom_prompt_suffix}"
+        prompt += self._build_multi_agent_prompt_section()
+        return prompt
+
+    def _build_multi_agent_prompt_section(self) -> str:
+        """Generate a system prompt section describing the multi-agent system.
+
+        Only called when settings.multi_agent_enabled is True.
+        Tells the LLM: identity, roster, delegation rules, creation rules.
+        """
+        from ..agents.presets import SYSTEM_PRESETS
+        from ..config import settings
+
+        if not settings.multi_agent_enabled:
+            return ""
+
+        profile = self._agent_profile
+        if profile:
+            identity_section = (
+                f"你是「{profile.name}」({profile.icon})，{profile.description}。"
+            )
+            my_id = profile.id
+        else:
+            identity_section = "你是默认通用助手。"
+            my_id = "default"
+
+        # Roster
+        agents_lines = []
+        for p in SYSTEM_PRESETS:
+            if p.id == my_id:
+                continue
+            skills_desc = f"技能: {', '.join(p.skills)}" if p.skills else "技能: 全部"
+            agents_lines.append(
+                f"  - {p.icon} **{p.name}** (`{p.id}`) — {p.description} ({skills_desc})"
+            )
+
+        try:
+            store_dir = settings.data_dir / "agents"
+            if store_dir.exists():
+                from ..agents.profile import ProfileStore
+                store = ProfileStore(store_dir)
+                preset_ids = {sp.id for sp in SYSTEM_PRESETS}
+                for p in store.list_all():
+                    if p.id == my_id or p.id in preset_ids:
+                        continue
+                    agents_lines.append(
+                        f"  - {p.icon} **{p.name}** (`{p.id}`) — {p.description}"
+                    )
+        except Exception:
+            pass
+
+        roster = "\n".join(agents_lines) if agents_lines else "  （暂无其他可用 Agent）"
+
+        # Available skills list for create_agent
+        skills_lines = []
+        try:
+            skill_registry = getattr(self, "skill_catalog", None)
+            if skill_registry:
+                reg = getattr(skill_registry, "registry", None)
+                if reg:
+                    for entry in reg.list_all():
+                        skills_lines.append(f"`{entry.name}`")
+        except Exception:
+            pass
+        skills_list = ", ".join(skills_lines) if skills_lines else "（系统会自动分配默认技能）"
+
+        return f"""
+
+## 多Agent协作系统
+
+{identity_section}
+
+你拥有 `delegate_to_agent` 和 `create_agent` 两个协作工具。
+
+### 可用的 Agent 团队
+
+{roster}
+
+### delegate_to_agent — 委派任务
+
+**何时委派**：
+- 用户请求明确属于另一个 Agent 的专长（文档处理→文助、写代码→码哥、数据分析→数析、网页操作→网探）
+- 复杂任务需要拆分给多个专家分别处理
+- 你对某领域不够专业，但有专门的 Agent 更擅长
+
+**何时不要委派**：
+- 简单通用的对话问答 — 自己回答
+- 任务完全在你的能力范围内 — 自己处理
+- 用户明确要你来做 — 尊重用户意愿
+
+**调用方法**：
+```
+delegate_to_agent(agent_id="目标Agent的ID", message="详细的任务描述", reason="委派原因")
+```
+
+**关键规则**：
+1. `message` 中必须包含充分的上下文（用户原始需求、相关文件路径、前序结论等），让目标 Agent 能独立完成，不要只写一句话
+2. 结果同步返回后，你需要**整合**并**用你自己的语气**回复用户，不要原封不动转发
+3. 委派深度上限 5 层（A→B→C→D→E），超过会被拒绝
+4. 如果委派失败或超时，告知用户情况并尝试自己处理或建议用户手动切换
+
+### create_agent — 动态创建 Agent
+
+**何时创建**：
+- 现有的 Agent 团队中没有适合当前任务的专家
+- 需要一个特定技能组合的临时角色（如"SQL优化专家"、"法律文书助手"）
+- 用户明确要求创建一个新的专用 Agent
+
+**何时不要创建**：
+- 现有 Agent 已经能胜任 — 直接委派
+- 任务太简单不值得新建角色 — 自己做
+- 只是换个说话风格 — 修改提示词而不是创建 Agent
+
+**调用方法**：
+```
+create_agent(name="Agent名称", description="功能描述", skills=["技能ID列表"], custom_prompt="提示词")
+```
+
+**参数说明**：
+- `name`：简短有辨识度的名称，如"SQL优化师"、"合同审查员"
+- `description`：一句话说明该 Agent 做什么
+- `skills`（可选）：从系统可用技能中选择: {skills_list}。不指定则继承全部技能
+- `custom_prompt`（可选）：给该 Agent 的角色提示词，描述它的专长、工作方式、注意事项
+
+**安全限制**：
+1. 每个会话最多创建 **3** 个动态 Agent
+2. 动态 Agent **不能再创建**新 Agent（禁止套娃）
+3. 动态 Agent 的权限不超过你（创建者）
+4. 空闲 60 分钟自动销毁
+5. 创建成功后会返回新 Agent 的 ID，你可以立即用 `delegate_to_agent` 向它委派任务
+
+**创建后的典型流程**：
+1. 调用 `create_agent` 得到新 Agent ID（如 `dynamic_sql_expert_abc12345`）
+2. 立即调用 `delegate_to_agent(agent_id="dynamic_sql_expert_abc12345", message="...")` 委派任务
+3. 整合结果回复用户
+
+### 协作行为准则
+
+- 委派是**你的工具**，用户看到的是你在协调团队，而不是你在"甩锅"
+- 主动告知用户你在请其他专家协助（如"我请文档专家帮您处理这个PPT..."）
+- 多个子任务可以考虑串行委派（前一个结果作为下一个的输入）
+- 不要对同一个任务反复委派给不同 Agent "碰运气"
+- 如果所有 Agent 都处理不了，诚实告知用户"""
 
     def _generate_tools_text(self) -> str:
         """
@@ -3566,6 +3741,7 @@ search_github → install_skill → 使用
                 messages, task_monitor=task_monitor, session_type=session_type,
                 thinking_mode=_thinking_mode, thinking_depth=_thinking_depth,
                 progress_callback=_progress_cb,
+                session=session,
             )
 
             # === flush 残留的 IM 进度消息，确保思维链先于回答到达 ===
@@ -3708,6 +3884,9 @@ search_github → install_skill → 使用
                     pass
 
             # === 核心推理 (流式) ===
+            _agent_profile_id = "default"
+            if session and hasattr(session, "context"):
+                _agent_profile_id = getattr(session.context, "agent_profile_id", "default") or "default"
             async for event in self.reasoning_engine.reason_stream(
                 messages=messages,
                 tools=self._tools,
@@ -3721,6 +3900,8 @@ search_github → install_skill → 使用
                 conversation_id=conversation_id,
                 thinking_mode=_thinking_mode,
                 thinking_depth=_thinking_depth,
+                agent_profile_id=_agent_profile_id,
+                session=session,
             ):
                 # 收集回复文本（用于 session 保存 & memory）
                 if event.get("type") == "text_delta":
@@ -4381,6 +4562,7 @@ NEXT: 建议的下一步（如有）"""
         thinking_mode: str | None = None,
         thinking_depth: str | None = None,
         progress_callback: Any = None,
+        session: Any = None,
     ) -> str:
         """
         使用指定的消息上下文进行对话（委托给 ReasoningEngine）
@@ -4422,6 +4604,9 @@ NEXT: 建议的下一步（如有）"""
         conversation_id = getattr(self, "_current_conversation_id", None) or getattr(
             self, "_current_session_id", None
         )
+        _agent_profile_id = "default"
+        if session and hasattr(session, "context"):
+            _agent_profile_id = getattr(session.context, "agent_profile_id", "default") or "default"
 
         # === 委托给 ReasoningEngine ===
         return await self.reasoning_engine.run(
@@ -4436,6 +4621,7 @@ NEXT: 建议的下一步（如有）"""
             thinking_mode=thinking_mode,
             thinking_depth=thinking_depth,
             progress_callback=progress_callback,
+            agent_profile_id=_agent_profile_id,
         )
 
         # ==================== 以下为旧代码（保留参考，后续完全清理） ====================

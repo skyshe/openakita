@@ -191,6 +191,29 @@ async def total(
     return {"start": start_str, "end": end_str, "data": row}
 
 
+@router.get("/by-agent")
+async def by_agent(
+    request: Request,
+    period: str | None = Query(None),
+    start: str | None = Query(None),
+    end: str | None = Query(None),
+):
+    """Token usage grouped by agent_profile_id for multi-agent mode."""
+    db = await _get_db()
+    if db is None:
+        return {"error": "database not available"}
+    start_str, end_str = _parse_range(start, end, period)
+    try:
+        by_agent_data = await db.get_token_usage_by_agent(
+            start_time=start_str, end_time=end_str
+        )
+    except Exception as e:
+        logger.error(f"[TokenStats] by-agent query failed: {e}")
+        await _reset_db()
+        return {"error": "query failed, connection reset"}
+    return {"start": start_str, "end": end_str, "by_agent": by_agent_data}
+
+
 @router.get("/context")
 async def context(request: Request):
     """Return the current session's context token usage and limit."""
