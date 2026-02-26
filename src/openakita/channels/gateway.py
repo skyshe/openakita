@@ -2344,9 +2344,65 @@ class MessageGateway:
             logger.error(f"Agent error: {e}")
             return f"处理出错: {str(e)}"
 
+    # 各渠道单条消息最大字符数（留余量）
+    # - telegram: API 硬限制 4096，留余量 → 4000
+    # - wework:   流式/response_url 模式下 send_message 会覆写而非追加，不应分片
+    # - dingtalk:  Webhook 文本/Markdown ≈20000
+    # - feishu:    卡片消息 ≈30000
+    # - onebot/qqbot: 一般无严格限制
+    _CHANNEL_MAX_LENGTH: dict[str, int] = {
+        "telegram": 4000,
+        "wework":   0,       # 0 = 不分片，整条发送
+        "dingtalk":  18000,
+        "feishu":    28000,
+        "onebot":    20000,
+        "qqbot":     20000,
+    }
+    _DEFAULT_MAX_LENGTH = 4000
+
+    # 分片间发送间隔（秒），避免触发平台限流
+    _SPLIT_SEND_INTERVAL: dict[str, float] = {
+        "telegram": 0.5,
+    }
+    _DEFAULT_SPLIT_INTERVAL = 0.15
+
+    @staticmethod
+    def _split_text(text: str, max_length: int) -> list[str]:
+        """
+        将长文本按换行符分割为不超过 max_length 的分片，
+        尽量保持段落完整；超长单行会按字符强制切断。
+        """
+        if max_length <= 0 or len(text) <= max_length:
+            return [text]
+
+        chunks: list[str] = []
+        current = ""
+        for line in text.split("\n"):
+            candidate = f"{current}{line}\n" if current else f"{line}\n"
+            if len(candidate) <= max_length:
+                current = candidate
+                continue
+
+            # 当前缓冲区已有内容 → 先入列
+            if current:
+                chunks.append(current.rstrip())
+                current = ""
+
+            # 单行本身就超长 → 按字符强制切断
+            if len(line) + 1 > max_length:
+                while line:
+                    chunks.append(line[:max_length])
+                    line = line[max_length:]
+            else:
+                current = line + "\n"
+
+        if current:
+            chunks.append(current.rstrip())
+        return chunks
+
     async def _send_response(self, original: UnifiedMessage, response: str) -> None:
         """
-        发送响应（带重试和长消息分割）
+        发送响应（带重试、按渠道分割长消息、分片间限流保护）
         """
         import asyncio
 
@@ -2355,27 +2411,24 @@ class MessageGateway:
             logger.error(f"No adapter for channel: {original.channel}")
             return
 
-        # 分割长消息（Telegram 限制 4096 字符）
-        max_length = 4000  # 留一些余量
-        messages = []
-        if len(response) <= max_length:
-            messages = [response]
-        else:
-            # 按换行符分割，尽量保持段落完整
-            current = ""
-            for line in response.split("\n"):
-                if len(current) + len(line) + 1 <= max_length:
-                    current += line + "\n"
-                else:
-                    if current:
-                        messages.append(current.rstrip())
-                    current = line + "\n"
-            if current:
-                messages.append(current.rstrip())
+        channel = original.channel
+        # 提取基础渠道名（兼容 "telegram_bot2" 等多实例命名）
+        base_channel = channel.split("_")[0] if "_" in channel else channel
 
-        # 发送每个部分（带重试）
+        max_length = self._CHANNEL_MAX_LENGTH.get(
+            base_channel, self._DEFAULT_MAX_LENGTH
+        )
+        messages = self._split_text(response, max_length)
+
+        interval = self._SPLIT_SEND_INTERVAL.get(
+            base_channel, self._DEFAULT_SPLIT_INTERVAL
+        )
+
         for i, text in enumerate(messages):
-            # 合并 metadata，注入 channel_user_id 用于群聊精确路由
+            # 分片间限流保护
+            if i > 0 and interval > 0:
+                await asyncio.sleep(interval)
+
             outgoing_meta = dict(original.metadata) if original.metadata else {}
             if original.channel_user_id:
                 outgoing_meta["channel_user_id"] = original.channel_user_id
@@ -2385,26 +2438,30 @@ class MessageGateway:
                 text=text,
                 reply_to=original.channel_message_id if i == 0 else None,
                 thread_id=original.thread_id,
-                parse_mode="markdown",  # 启用 Markdown 格式
-                metadata=outgoing_meta,  # 透传元数据 + channel_user_id
+                parse_mode="markdown",
+                metadata=outgoing_meta,
             )
 
-            # 重试最多 3 次
             for attempt in range(3):
                 try:
                     await adapter.send_message(outgoing)
                     break
                 except Exception as e:
                     if attempt < 2:
-                        logger.warning(f"Send failed (attempt {attempt + 1}), retrying: {e}")
+                        logger.warning(
+                            f"Send failed (attempt {attempt + 1}), "
+                            f"retrying in 1s: {e}"
+                        )
                         await asyncio.sleep(1)
                     else:
-                        logger.error(f"Failed to send response after 3 attempts: {e}")
-                        # 最后一次失败，尝试发送错误提示
+                        logger.error(
+                            f"Failed to send response part {i + 1}/{len(messages)} "
+                            f"after 3 attempts: {e}"
+                        )
                         with contextlib.suppress(BaseException):
                             await adapter.send_text(
                                 chat_id=original.chat_id,
-                                text="消息发送失败，请稍后重试。",
+                                text=f"消息发送失败（第 {i + 1}/{len(messages)} 段），请稍后重试。",
                             )
 
     async def _send_error(self, original: UnifiedMessage, error: str) -> None:

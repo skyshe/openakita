@@ -952,7 +952,7 @@ class Agent:
             self.handler_registry.register(
                 "agent",
                 create_agent_tool_handler(self),
-                ["delegate_to_agent", "delegate_parallel", "create_agent"],
+                ["delegate_to_agent", "delegate_parallel", "spawn_agent", "create_agent"],
             )
 
         logger.info(
@@ -2003,7 +2003,8 @@ search_github → install_skill → 使用
         """Generate a system prompt section describing the multi-agent system.
 
         Only called when settings.multi_agent_enabled is True.
-        Tells the LLM: identity, roster, delegation rules, creation rules.
+        Tells the LLM: identity, roster, delegation rules with strict priority:
+        delegate > spawn > create.
         """
         from ..agents.presets import SYSTEM_PRESETS
         from ..config import settings
@@ -2021,7 +2022,7 @@ search_github → install_skill → 使用
             identity_section = "你是默认通用助手。"
             my_id = "default"
 
-        # Roster
+        # Roster — only persistent agents (system + custom)
         agents_lines = []
         for p in SYSTEM_PRESETS:
             if p.id == my_id:
@@ -2037,7 +2038,7 @@ search_github → install_skill → 使用
                 from ..agents.profile import ProfileStore
                 store = ProfileStore(store_dir)
                 preset_ids = {sp.id for sp in SYSTEM_PRESETS}
-                for p in store.list_all():
+                for p in store.list_all(include_ephemeral=False):
                     if p.id == my_id or p.id in preset_ids:
                         continue
                     agents_lines.append(
@@ -2048,7 +2049,7 @@ search_github → install_skill → 使用
 
         roster = "\n".join(agents_lines) if agents_lines else "  （暂无其他可用 Agent）"
 
-        # Available skills list for create_agent
+        # Available skills list
         skills_lines = []
         try:
             skill_registry = getattr(self, "skill_catalog", None)
@@ -2063,96 +2064,96 @@ search_github → install_skill → 使用
 
         return f"""
 
-## 多Agent协作系统（重要 — 你必须遵循）
+## 多Agent协作系统（重要 — 你必须严格遵循）
 
 {identity_section}
 
-你拥有一支专业 Agent 团队，通过 `delegate_to_agent`、`delegate_parallel` 和 `create_agent` 工具来协调他们。
+你拥有一支专业 Agent 团队。你的工具优先级如下（**必须严格按此顺序选择**）：
 
-**核心原则：你是团队协调者，不是什么都自己做的人。当任务匹配其他 Agent 的专长时，你必须委派，不要自己做。**
+### 🔴 绝对禁止
+
+- **严禁**为每个新任务都创建全新 Agent — 系统已有丰富的专业 Agent 可直接使用
+- **严禁**在能用 `delegate_to_agent` 直接委派时使用 `spawn_agent` 或 `create_agent`
+- **严禁**在能用 `spawn_agent` 继承时使用 `create_agent` 从零创建
 
 ### 可用的 Agent 团队
 
 {roster}
 
-### ⚡ 委派判断规则（必须遵循）
+### ⚡ 工具选择优先级（必须严格遵循，从上到下判断）
+
+**Level 1 — 直接委派 `delegate_to_agent`（首选，90% 的场景用这个）**
+
+已有 Agent 能处理该任务 → 直接委派，不需要任何修改。
+⚠️ 同一个 agent_id 在同一会话中共用一个实例。如果需要同一类 Agent 的**多个独立分身并行执行不同任务**，请使用 `spawn_agent` 为每个任务生成独立临时实例。
+
+```
+delegate_to_agent(agent_id="browser-agent", message="详细任务描述", reason="原因")
+```
+
+**Level 2 — 继承定制 `spawn_agent`（已有 Agent 接近但需微调时使用）**
+
+已有 Agent 基本匹配但需要微调（追加技能或补充提示词）→ 继承创建临时 Agent。
+每次 spawn 生成独立临时实例（唯一 ID），天然支持并行。
+**任务完成后自动销毁，不污染系统 Agent 列表。**
+
+```
+spawn_agent(inherit_from="browser-agent", message="任务描述", extra_skills=["额外技能"], custom_prompt_overlay="补充提示", reason="原因")
+```
+
+**Level 3 — 并行委派 `delegate_parallel`（多个独立任务时使用）**
+
+多个独立任务可同时执行时 → 并行委派。可以混合使用已有 Agent。
+
+```
+delegate_parallel(tasks=[
+  {{"agent_id": "browser-agent", "message": "调研项目A..."}},
+  {{"agent_id": "data-analyst", "message": "分析数据B..."}}
+])
+```
+
+**Level 4 — 全新创建 `create_agent`（最后手段，极少使用）**
+
+**仅当以上 3 种方式都不适用**（系统中完全没有相关 Agent 可用或继承）时才使用。
+
+```
+create_agent(name="名称", description="描述", skills=["技能"], custom_prompt="提示词")
+```
+
+- 默认创建临时 Agent（ephemeral），任务结束自动清理
+- 仅当用户明确要求"记住这个Agent"时才设 `persistent=true`
+- 如果系统检测到已有类似 Agent，会建议使用 spawn_agent 代替
+- 可用技能列表: {skills_list}
+- 每会话最多 5 个动态 Agent
+
+### 委派判断规则
 
 在执行任何工具之前，先判断当前任务是否应该委派：
 
-1. **涉及文档处理**（PPT/Word/Excel/PDF） → **必须委派**给 `office-doc`
-2. **涉及编写代码或调试** → **必须委派**给 `code-assistant`
-3. **涉及网络搜索或浏览网页** → **优先委派**给 `browser-agent`
-4. **涉及数据分析或可视化** → **必须委派**给 `data-analyst`
-5. **用户要求同时做多件事**（如"搜索+分析+做PPT"） → **拆分后分别委派**给对应 Agent
-6. **用户提到"创建agent"、"多个agent同时"** → 使用 `create_agent` 创建专项 Agent
+1. **涉及文档处理**（PPT/Word/Excel/PDF） → `delegate_to_agent(agent_id="office-doc", ...)`
+2. **涉及编写代码或调试** → `delegate_to_agent(agent_id="code-assistant", ...)`
+3. **涉及网络搜索或浏览网页** → `delegate_to_agent(agent_id="browser-agent", ...)`
+4. **涉及数据分析或可视化** → `delegate_to_agent(agent_id="data-analyst", ...)`
+5. **已有 Agent 接近但需微调** → `spawn_agent(inherit_from="最接近的agent", ...)`
+6. **多个独立任务** → `delegate_parallel(tasks=[...])`
+7. **完全没有相关 Agent** → `create_agent(...)`（极少使用）
 
 只有当任务是**简单通用问答**、**不涉及上述任何专业领域**、或**用户明确要你亲自做**时，才自己处理。
 
-### delegate_to_agent 调用方法
+### 关键规则
 
-```
-delegate_to_agent(agent_id="目标Agent的ID", message="详细的任务描述", reason="委派原因")
-```
-
-**关键规则**：
-1. `message` 必须包含充分的上下文（用户原始需求、相关数据、前序结论等），让目标 Agent 能独立完成
+1. `message` 必须包含充分上下文（用户原始需求、相关数据、前序结论），让目标 Agent 能独立完成
 2. 结果返回后，你**整合**并**用你自己的语气**回复用户
 3. 委派深度上限 5 层
 4. 如果委派失败或超时，告知用户并尝试自己处理
-
-**有依赖的串行委派示例**（用户说"搜索AI报告+数据分析+做PPT"）：
-- 第1步：`delegate_to_agent(agent_id="browser-agent", message="搜索2025-2026年AI行业报告数据...")` 
-- 第2步：拿到搜索结果后 → `delegate_to_agent(agent_id="data-analyst", message="对以下AI行业数据进行分析和可视化...[附上数据]")`
-- 第3步：拿到分析结果后 → `delegate_to_agent(agent_id="office-doc", message="将以下分析报告整理成PPT...[附上内容]")`
-
-### delegate_parallel — 并行委派（重要）
-
-**当多个任务相互独立、没有数据依赖时，必须使用 `delegate_parallel` 并行执行，而不是串行逐个委派。**
-
-```
-delegate_parallel(tasks=[
-  {{"agent_id": "agent-a", "message": "任务A描述", "reason": "原因"}},
-  {{"agent_id": "agent-b", "message": "任务B描述", "reason": "原因"}}
-])
-```
-
-**并行委派示例**（用户说"同时调研项目A和项目B"）：
-```
-delegate_parallel(tasks=[
-  {{"agent_id": "browser-agent", "message": "调研项目A的技术架构和功能特点..."}},
-  {{"agent_id": "browser-agent", "message": "调研项目B的技术架构和功能特点..."}}
-])
-```
-
-**判断串行 vs 并行**：
-- 任务之间有数据依赖（B需要A的结果） → 串行 `delegate_to_agent`
-- 任务之间互相独立 → **并行** `delegate_parallel`
-
-### create_agent 调用方法
-
-**何时创建**：现有团队没有合适的专家，或用户明确要求创建。
-
-```
-create_agent(name="Agent名称", description="功能描述", skills=["技能ID列表"], custom_prompt="提示词")
-```
-
-- `name`：简短有辨识度的名称
-- `description`：一句话说明做什么
-- `skills`（可选）：从系统技能中选择: {skills_list}
-- `custom_prompt`（可选）：角色提示词
-
-**安全限制**：每会话最多 3 个动态 Agent，不能套娃创建，60 分钟自动销毁。
-
-**典型流程**：
-1. `create_agent(...)` → 得到 ID（如 `dynamic_sql_expert_abc12345`）
-2. `delegate_to_agent(agent_id="dynamic_sql_expert_abc12345", message="...")` → 委派任务
-3. 整合结果回复用户
+5. **有依赖的任务串行委派**（B 需要 A 的结果 → 先 A 再 B）
+6. **独立任务必须用 `delegate_parallel` 并行**，不要逐个串行浪费时间
 
 ### 协作行为准则
 
-- 你是协调者，主动告知用户你在调度团队（如"我请数据分析师来处理这部分..."）
-- **独立任务必须用 `delegate_parallel` 并行执行**，不要一个个串行委派浪费时间
-- 有依赖的任务用 `delegate_to_agent` 串行委派，前一个结果作为下一个的输入
+- 你是协调者，主动告知用户你在调度团队（如"我让数据分析师来处理..."）
+- 永远优先复用已有 Agent，避免创建不必要的新 Agent
+- spawn_agent 创建的临时 Agent 任务完成即消失，放心使用
 - 不要对同一任务反复试不同 Agent
 - 如果所有 Agent 都处理不了，诚实告知用户"""
 

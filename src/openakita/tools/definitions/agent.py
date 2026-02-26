@@ -1,9 +1,13 @@
 """
-Multi-agent tools — delegate_to_agent and create_agent.
+Multi-agent tools — delegate, spawn and create.
 
 Only injected when settings.multi_agent_enabled is True.
-These tools allow the AI to delegate tasks to other agents
-and create new temporary agent instances within a session.
+
+Tool priority (LLM should follow this order):
+1. delegate_to_agent — use existing agent directly
+2. spawn_agent — inherit + customize an existing agent (ephemeral)
+3. delegate_parallel — parallel delegation (can mix delegate + spawn)
+4. create_agent — last resort, create from scratch (defaults to ephemeral)
 """
 
 AGENT_TOOLS = [
@@ -11,13 +15,14 @@ AGENT_TOOLS = [
         "name": "delegate_to_agent",
         "category": "Agent",
         "description": (
-            "Delegate a task to another specialized agent. "
-            "When you need to: (1) Hand off work requiring expertise you lack, "
-            "(2) Route a sub-task to a domain specialist, "
-            "(3) Collaborate across agent roles."
+            "Delegate a task to an existing specialized agent. "
+            "This is the PREFERRED way to use multi-agent collaboration. "
+            "Use when: (1) An existing agent profile matches the task, "
+            "(2) You need domain expertise (code, data, browser, docs), "
+            "(3) The task can be fully handled by an existing agent without customization."
         ),
         "detail": (
-            "将任务委派给另一个专业 Agent。\n\n"
+            "将任务委派给已有的专业 Agent。这是多 Agent 协作的**首选**方式。\n\n"
             "**适用场景**：\n"
             "- 当前任务需要另一个 Agent 的专长（如代码、数据分析、浏览器操作）\n"
             "- 拆分复杂任务到多个 Agent 协作完成\n"
@@ -25,7 +30,7 @@ AGENT_TOOLS = [
             "**注意事项**：\n"
             "- 目标 Agent 必须已注册（预设或动态创建）\n"
             "- 委派深度上限为 5 层，防止无限递归\n"
-            "- 结果会同步返回给当前 Agent"
+            "- 同一个 agent_id 可以被多次委派（池自动管理并行实例）"
         ),
         "input_schema": {
             "type": "object",
@@ -58,11 +63,84 @@ AGENT_TOOLS = [
         ],
     },
     {
+        "name": "spawn_agent",
+        "category": "Agent",
+        "description": (
+            "Spawn a temporary agent by inheriting from an existing agent profile. "
+            "Use when: (1) An existing agent is close but needs minor customization, "
+            "(2) You need a specialized variant with extra skills or a modified prompt, "
+            "(3) You need multiple independent clones of the same agent for parallel tasks. "
+            "The spawned agent is ephemeral — automatically destroyed after the task completes."
+        ),
+        "detail": (
+            "继承已有 Agent 创建临时工作 Agent，任务结束后自动销毁。\n\n"
+            "**适用场景**：\n"
+            "- 已有 Agent 接近需求但需要微调（追加技能或提示词）\n"
+            "- 需要同一个 Agent 的多个独立分身并行执行不同任务\n"
+            "- 一次性任务不需要持久化 Agent\n\n"
+            "**工作原理**：\n"
+            "1. 从 inherit_from 指定的基础 Profile 复制技能和提示词\n"
+            "2. 合并 extra_skills 和 custom_prompt_overlay\n"
+            "3. 创建临时 Profile（仅存内存，不写磁盘）\n"
+            "4. 立即委派 message 给临时 Agent 执行\n"
+            "5. 任务完成后自动清理临时 Profile"
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "inherit_from": {
+                    "type": "string",
+                    "description": "基础 Agent Profile ID（如 'browser-agent', 'code-assistant'）",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "要执行的任务描述",
+                },
+                "extra_skills": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "在基础 Agent 技能之上追加的额外技能（可选）",
+                },
+                "custom_prompt_overlay": {
+                    "type": "string",
+                    "description": "追加到基础 Agent 提示词之上的定制提示（可选）",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "为什么需要定制（可选，用于日志）",
+                },
+            },
+            "required": ["inherit_from", "message"],
+        },
+        "examples": [
+            {
+                "scenario": "继承浏览器 Agent，定制为网页调研专员",
+                "params": {
+                    "inherit_from": "browser-agent",
+                    "message": "调研 React 19 的新特性并整理报告",
+                    "custom_prompt_overlay": "重点关注性能优化和并发特性",
+                    "reason": "需要浏览器能力 + 调研专长",
+                },
+                "expected": "临时 Agent 执行调研后返回结果",
+            },
+            {
+                "scenario": "创建两个独立分身并行调研",
+                "params": {
+                    "inherit_from": "browser-agent",
+                    "message": "调研 Vue 4 的最新动态",
+                    "reason": "并行调研第二个框架",
+                },
+                "expected": "每次 spawn 生成唯一临时 ID，可并行运行多个",
+            },
+        ],
+    },
+    {
         "name": "delegate_parallel",
         "category": "Agent",
         "description": (
             "Delegate tasks to multiple agents in parallel. "
-            "Use when you need to assign independent tasks to different agents simultaneously."
+            "Use when you need to assign independent tasks to different agents simultaneously. "
+            "Can mix existing agents and spawned agents."
         ),
         "detail": (
             "同时委派任务给多个 Agent 并行执行。\n\n"
@@ -71,7 +149,8 @@ AGENT_TOOLS = [
             "- 需要多个 Agent 同时调研不同方向\n\n"
             "**注意事项**：\n"
             "- 所有任务并行执行，结果一起返回\n"
-            "- 各任务之间不能有依赖关系（有依赖请用 delegate_to_agent 串行委派）"
+            "- 各任务之间不能有依赖关系（有依赖请用 delegate_to_agent 串行委派）\n"
+            "- 对同一个 agent_id 发多个任务时，每个会获得独立实例"
         ),
         "input_schema": {
             "type": "object",
@@ -96,7 +175,7 @@ AGENT_TOOLS = [
                         },
                         "required": ["agent_id", "message"],
                     },
-                    "description": "要并行执行的任务列表",
+                    "description": "要并行执行的任务列表（2-5个）",
                 },
             },
             "required": ["tasks"],
@@ -118,21 +197,27 @@ AGENT_TOOLS = [
         "name": "create_agent",
         "category": "Agent",
         "description": (
-            "Create a temporary specialized agent for this session. "
-            "When you need to: (1) No existing agent profile fits the task, "
-            "(2) Create a custom specialist on the fly, "
-            "(3) Spawn a one-off helper with specific skills."
+            "Create a completely new agent from scratch. "
+            "⚠️ This is the LAST RESORT — only use when NO existing agent can be "
+            "delegated to or spawned from. "
+            "Prefer delegate_to_agent (direct use) or spawn_agent (inherit + customize) first. "
+            "Created agents are ephemeral by default (auto-cleanup after task). "
+            "Set persistent=true only if the user explicitly wants to keep the agent."
         ),
         "detail": (
-            "为当前会话创建一个临时 Agent 实例。\n\n"
-            "**适用场景**：\n"
-            "- 现有 Agent 都不适合当前任务\n"
-            "- 需要一个具有特定技能组合的临时专家\n"
-            "- 快速原型化新的 Agent 角色\n\n"
+            "创建全新 Agent。⚠️ 这是**最后手段**。\n\n"
+            "**使用前请确认**：\n"
+            "1. ✅ 已检查所有现有 Agent，没有一个能直接使用（delegate_to_agent）\n"
+            "2. ✅ 已检查所有现有 Agent，没有一个能继承定制（spawn_agent）\n"
+            "3. ✅ 确实需要一个全新角色\n\n"
+            "**默认行为**：\n"
+            "- 创建的 Agent 默认是临时的（ephemeral），任务结束后自动销毁\n"
+            "- 不会污染系统 Agent 列表\n"
+            "- 设置 persistent=true 可永久保存（仅在用户明确要求时使用）\n\n"
             "**限制**：\n"
-            "- 每个会话最多创建 3 个动态 Agent\n"
+            "- 每个会话最多创建 5 个动态 Agent\n"
             "- 动态 Agent 不能再创建新 Agent\n"
-            "- 最大存活时间 60 分钟"
+            "- 如果系统检测到已有类似 Agent，会建议使用 spawn_agent 代替"
         ),
         "input_schema": {
             "type": "object",
@@ -154,18 +239,26 @@ AGENT_TOOLS = [
                     "type": "string",
                     "description": "自定义系统提示词（可选）",
                 },
+                "persistent": {
+                    "type": "boolean",
+                    "description": "是否永久保存此 Agent（默认 false = 临时，任务结束后自动清理）",
+                },
+                "force": {
+                    "type": "boolean",
+                    "description": "跳过相似度检查强制创建（默认 false，当系统建议使用已有 Agent 但你确实需要全新的时使用）",
+                },
             },
             "required": ["name", "description"],
         },
         "examples": [
             {
-                "scenario": "创建一个 SQL 专家 Agent",
+                "scenario": "创建临时 SQL 专家（默认行为）",
                 "params": {
                     "name": "SQL Expert",
                     "description": "专门处理 SQL 查询优化和数据库设计",
-                    "custom_prompt": "你是一个 SQL 优化专家，擅长查询性能调优。",
+                    "custom_prompt": "你是一个 SQL 优化专家。",
                 },
-                "expected": "✅ Agent created: dynamic_sql_expert_xxxx (SQL Expert)",
+                "expected": "✅ Agent created: ephemeral_sql_expert_xxx (ephemeral)",
             },
         ],
     },

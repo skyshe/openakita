@@ -110,6 +110,12 @@ async def orchestrator_state(request: Request):
     """Diagnostic: return orchestrator internal sub-agent states and active tasks."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
+        try:
+            from openakita.main import _orchestrator
+            orchestrator = _orchestrator
+        except (ImportError, AttributeError):
+            pass
+    if orchestrator is None:
         return {"error": "Orchestrator not available", "enabled": False}
     return {
         "enabled": True,

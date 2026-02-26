@@ -473,10 +473,20 @@ class AgentOrchestrator:
             raise
 
     def _update_sub_state(self, key: str, status: str, elapsed: float) -> None:
-        """Update a sub-agent's terminal state and schedule cleanup."""
-        if key in self._sub_agent_states:
-            self._sub_agent_states[key]["status"] = status
-            self._sub_agent_states[key]["elapsed_s"] = round(elapsed)
+        """Update a sub-agent's terminal state and schedule cleanup.
+
+        For ephemeral profiles, also removes the temporary profile from
+        the ProfileStore once the task reaches a terminal state.
+        """
+        state_entry = self._sub_agent_states.get(key)
+        if state_entry:
+            state_entry["status"] = status
+            state_entry["elapsed_s"] = round(elapsed)
+
+        # Clean up ephemeral profile on terminal states
+        profile_id = state_entry.get("profile_id", "") if state_entry else ""
+        if profile_id and status in ("completed", "timeout", "cancelled", "error"):
+            self._try_cleanup_ephemeral(profile_id)
 
         async def _delayed_cleanup() -> None:
             await asyncio.sleep(120)
@@ -490,6 +500,20 @@ class AgentOrchestrator:
             self._sub_cleanup_tasks[key] = asyncio.create_task(_delayed_cleanup())
         except RuntimeError:
             self._sub_agent_states.pop(key, None)
+
+    def _try_cleanup_ephemeral(self, profile_id: str) -> None:
+        """Remove an ephemeral profile from ProfileStore if applicable."""
+        try:
+            if self._profile_store is None:
+                return
+            p = self._profile_store.get(profile_id)
+            if p and getattr(p, "ephemeral", False):
+                self._profile_store.remove_ephemeral(profile_id)
+                logger.info(
+                    f"[Orchestrator] Cleaned up ephemeral profile: {profile_id}"
+                )
+        except Exception as e:
+            logger.warning(f"[Orchestrator] Failed to cleanup ephemeral {profile_id}: {e}")
 
     @staticmethod
     def _get_tools_executed(agent: Any, session_id: str) -> list[str]:

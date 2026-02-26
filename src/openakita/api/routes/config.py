@@ -361,7 +361,7 @@ async def read_agent_mode():
 
 
 @router.post("/api/config/agent-mode")
-async def write_agent_mode(body: AgentModeRequest):
+async def write_agent_mode(body: AgentModeRequest, request: Request):
     """切换多Agent模式（Beta）。修改立即生效并持久化。"""
     from openakita.config import runtime_state, settings
 
@@ -371,6 +371,23 @@ async def write_agent_mode(body: AgentModeRequest):
     logger.info(
         f"[Config API] multi_agent_enabled: {old} -> {body.enabled}"
     )
+
+    if body.enabled and not old:
+        try:
+            from openakita.main import _init_orchestrator
+            await _init_orchestrator()
+            from openakita.main import _orchestrator
+            if _orchestrator is not None:
+                request.app.state.orchestrator = _orchestrator
+                logger.info("[Config API] Orchestrator initialized and bound to app.state")
+        except Exception as e:
+            logger.warning(f"[Config API] Failed to init orchestrator on mode switch: {e}")
+        try:
+            from openakita.agents.presets import ensure_presets_on_mode_enable
+            ensure_presets_on_mode_enable(settings.data_dir / "agents")
+        except Exception as e:
+            logger.warning(f"[Config API] Failed to deploy presets: {e}")
+
     return {"status": "ok", "multi_agent_enabled": body.enabled}
 
 

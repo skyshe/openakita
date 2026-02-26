@@ -312,6 +312,12 @@ async def get_topology(request: Request):
 
     pool = getattr(request.app.state, "agent_pool", None)
     orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None:
+        try:
+            from openakita.main import _orchestrator
+            orchestrator = _orchestrator
+        except (ImportError, AttributeError):
+            pass
     session_manager = getattr(request.app.state, "session_manager", None)
 
     profile_map: dict[str, dict] = {}
@@ -333,58 +339,63 @@ async def get_topology(request: Request):
         stats = pool.get_stats()
         for entry in stats.get("sessions", []):
             sid = entry["session_id"]
-            pid = entry["profile_id"]
-            seen_ids.add(sid)
+            agents_in_session = entry.get("agents", [{"profile_id": entry.get("profile_id", "default")}])
 
-            pinfo = profile_map.get(pid, {"name": pid, "icon": "🤖", "color": "#6b7280"})
+            for agent_info in agents_in_session:
+                pid = agent_info["profile_id"]
+                node_id = f"{sid}::{pid}" if len(agents_in_session) > 1 else sid
+                if node_id in seen_ids:
+                    continue
+                seen_ids.add(node_id)
 
-            # Determine running status from the agent instance
-            status = "idle"
-            iteration = 0
-            tools_executed: list[str] = []
-            tools_total = 0
-            elapsed_s = 0
-            agent_inst = pool.get_existing(sid)
-            if agent_inst is not None:
-                astate = getattr(agent_inst, "agent_state", None)
-                if astate:
-                    task = astate.get_task_for_session(sid) or astate.current_task
-                    if task and task.is_active:
-                        status = "running"
-                        iteration = task.iteration
-                        tools_executed = list(task.tools_executed[-5:]) if task.tools_executed else []
-                        tools_total = len(task.tools_executed)
-                        if hasattr(task, "started_at") and task.started_at:
-                            import time
-                            elapsed_s = int(time.time() - task.started_at)
+                pinfo = profile_map.get(pid, {"name": pid, "icon": "🤖", "color": "#6b7280"})
 
-            conv_title = ""
-            if session_manager:
-                try:
-                    sess = session_manager.get_session("desktop", sid, "desktop_user", create_if_missing=False)
-                    if sess and hasattr(sess, "context"):
-                        msgs = sess.context.messages if hasattr(sess.context, "messages") else []
-                        for m in msgs:
-                            if m.get("role") == "user":
-                                conv_title = (m.get("content") or "")[:60]
-                except Exception:
-                    pass
+                status = "idle"
+                iteration = 0
+                tools_executed: list[str] = []
+                tools_total = 0
+                elapsed_s = 0
+                agent_inst = pool.get_existing(sid, profile_id=pid)
+                if agent_inst is not None:
+                    astate = getattr(agent_inst, "agent_state", None)
+                    if astate:
+                        task = astate.get_task_for_session(sid) or astate.current_task
+                        if task and task.is_active:
+                            status = "running"
+                            iteration = task.iteration
+                            tools_executed = list(task.tools_executed[-5:]) if task.tools_executed else []
+                            tools_total = len(task.tools_executed)
+                            if hasattr(task, "started_at") and task.started_at:
+                                import time
+                                elapsed_s = int(time.time() - task.started_at)
 
-            nodes.append({
-                "id": sid,
-                "profile_id": pid,
-                "name": pinfo["name"],
-                "icon": pinfo["icon"],
-                "color": pinfo["color"],
-                "status": status,
-                "is_sub_agent": False,
-                "parent_id": None,
-                "iteration": iteration,
-                "tools_executed": tools_executed,
-                "tools_total": tools_total,
-                "elapsed_s": elapsed_s,
-                "conversation_title": conv_title,
-            })
+                conv_title = ""
+                if session_manager:
+                    try:
+                        sess = session_manager.get_session("desktop", sid, "desktop_user", create_if_missing=False)
+                        if sess and hasattr(sess, "context"):
+                            msgs = sess.context.messages if hasattr(sess.context, "messages") else []
+                            for m in msgs:
+                                if m.get("role") == "user":
+                                    conv_title = (m.get("content") or "")[:60]
+                    except Exception:
+                        pass
+
+                nodes.append({
+                    "id": node_id,
+                    "profile_id": pid,
+                    "name": pinfo["name"],
+                    "icon": pinfo["icon"],
+                    "color": pinfo["color"],
+                    "status": status,
+                    "is_sub_agent": False,
+                    "parent_id": None,
+                    "iteration": iteration,
+                    "tools_executed": tools_executed,
+                    "tools_total": tools_total,
+                    "elapsed_s": elapsed_s,
+                    "conversation_title": conv_title,
+                })
 
     # Sub-agent states from orchestrator
     if orchestrator and pool:

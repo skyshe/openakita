@@ -68,6 +68,10 @@ class AgentProfile:
     name_i18n: dict[str, str] = field(default_factory=dict)
     description_i18n: dict[str, str] = field(default_factory=dict)
 
+    # 临时 Agent 支持
+    ephemeral: bool = False
+    inherit_from: str | None = None
+
     def __post_init__(self):
         if isinstance(self.type, str):
             self.type = AgentType(self.type)
@@ -104,15 +108,12 @@ class AgentProfile:
 
 class ProfileStore:
     """
-    AgentProfile 持久化存储。
+    AgentProfile 持久化存储 + 临时 (ephemeral) 内存存储。
 
-    存储路径: {base_dir}/profiles/{profile_id}.json
-    线程安全：使用 RLock 保护内存缓存。
+    持久化路径: {base_dir}/profiles/{profile_id}.json
+    临时 Profile: 仅存内存 (_ephemeral dict)，不写磁盘，任务结束后自动清理。
+    线程安全：使用 RLock 保护所有缓存。
     SYSTEM Profile 保护：禁止删除，PUT 只允许修改自定义字段。
-
-    注意：get() 和 list_all() 从内存缓存读取（初始化时从磁盘加载）。
-    多个 ProfileStore 实例可能看到不同的缓存状态，但每个实例在初始化时都会从磁盘加载，
-    因此可以正常工作。如需实时读取磁盘，可在调用前重新创建 ProfileStore 实例。
     """
 
     def __init__(self, base_dir: str | Path):
@@ -120,6 +121,7 @@ class ProfileStore:
         self._profiles_dir = self._base_dir / "profiles"
         self._profiles_dir.mkdir(parents=True, exist_ok=True)
         self._cache: dict[str, AgentProfile] = {}
+        self._ephemeral: dict[str, AgentProfile] = {}
         self._lock = threading.RLock()
         self._load_all()
 
@@ -139,15 +141,26 @@ class ProfileStore:
 
     def get(self, profile_id: str) -> AgentProfile | None:
         with self._lock:
-            return self._cache.get(profile_id)
+            return self._ephemeral.get(profile_id) or self._cache.get(profile_id)
 
-    def list_all(self) -> list[AgentProfile]:
+    def list_all(self, include_ephemeral: bool = False) -> list[AgentProfile]:
         with self._lock:
-            return list(self._cache.values())
+            result = list(self._cache.values())
+            if include_ephemeral:
+                result.extend(self._ephemeral.values())
+            return result
 
     def save(self, profile: AgentProfile) -> None:
-        """保存 Profile（新建或更新）"""
+        """保存 Profile。ephemeral=True 的只存内存，否则写磁盘。"""
         with self._lock:
+            if profile.ephemeral:
+                self._ephemeral[profile.id] = profile
+                logger.info(
+                    f"ProfileStore saved ephemeral: {profile.id} "
+                    f"(inherit_from={profile.inherit_from})"
+                )
+                return
+
             existing = self._cache.get(profile.id)
             if existing and existing.is_system:
                 self._validate_system_update(existing, profile)
@@ -206,11 +219,44 @@ class ProfileStore:
 
     def exists(self, profile_id: str) -> bool:
         with self._lock:
-            return profile_id in self._cache
+            return profile_id in self._cache or profile_id in self._ephemeral
 
-    def count(self) -> int:
+    def count(self, include_ephemeral: bool = False) -> int:
         with self._lock:
-            return len(self._cache)
+            n = len(self._cache)
+            if include_ephemeral:
+                n += len(self._ephemeral)
+            return n
+
+    def remove_ephemeral(self, profile_id: str) -> bool:
+        """移除单个临时 Profile。"""
+        with self._lock:
+            removed = self._ephemeral.pop(profile_id, None)
+        if removed:
+            logger.info(f"ProfileStore removed ephemeral: {profile_id}")
+            return True
+        return False
+
+    def cleanup_ephemeral(self, session_prefix: str = "") -> int:
+        """按 ID 前缀批量清理临时 Profile。无前缀时清理全部。"""
+        with self._lock:
+            if not session_prefix:
+                count = len(self._ephemeral)
+                self._ephemeral.clear()
+            else:
+                to_remove = [
+                    pid for pid in self._ephemeral
+                    if pid.startswith(f"ephemeral_{session_prefix}")
+                ]
+                count = len(to_remove)
+                for pid in to_remove:
+                    del self._ephemeral[pid]
+        if count:
+            logger.info(
+                f"ProfileStore cleaned up {count} ephemeral profile(s)"
+                + (f" (prefix={session_prefix!r})" if session_prefix else "")
+            )
+        return count
 
     def _persist(self, profile: AgentProfile) -> None:
         fp = self._profiles_dir / f"{profile.id}.json"
