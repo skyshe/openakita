@@ -33,6 +33,7 @@
   --text-secondary: rgba(17, 24, 39, 0.55);
   --fg-secondary: rgba(17, 24, 39, 0.50);
   --panel-glass: rgba(255, 255, 255, 0.06);
+  --card-bg: #ffffff;
 }
 
 :root[data-theme="dark"] {
@@ -67,6 +68,7 @@
   --primary: #38bdf8;
   --success: #34d399;
   --error: #f87171;
+  --card-bg: #27272a;
   --text-secondary: rgba(255, 255, 255, 0.50);
   --fg-secondary: rgba(255, 255, 255, 0.45);
   --panel-glass: rgba(255, 255, 255, 0.03);

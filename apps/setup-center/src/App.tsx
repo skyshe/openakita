@@ -8929,7 +8929,7 @@ export function App() {
             lineHeight: 1.6,
             flexShrink: 0,
           }}>
-            <div>Desktop v{desktopVersion}</div>
+            <div>Desktop v{desktopVersion}{import.meta.env.VITE_PREVIEW_BUILD === "true" && <span style={{ marginLeft: 6, color: "#e8a735", fontWeight: 600, opacity: 1 }}>预览版</span>}</div>
             {backendVersion && <div>Backend v{backendVersion}</div>}
             {!backendVersion && serviceStatus?.running && <div>Backend: -</div>}
             <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 10 }}>
@@ -9037,8 +9037,8 @@ export function App() {
                 <div
                   style={{
                     position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 999,
-                    background: "var(--card-bg, #fff)", border: "1px solid var(--line)", borderRadius: 8,
-                    boxShadow: "0 4px 16px rgba(0,0,0,0.12)", minWidth: 220, padding: "6px 0",
+                    background: "var(--card-bg, #fff)", color: "var(--text)", border: "1px solid var(--line)", borderRadius: 8,
+                    boxShadow: "var(--shadow)", minWidth: 220, padding: "6px 0",
                   }}
                   onMouseLeave={() => setWsDropdownOpen(false)}
                 >
