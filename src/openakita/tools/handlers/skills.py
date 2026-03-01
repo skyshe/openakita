@@ -183,7 +183,12 @@ class SkillsHandler:
         skill = self.agent.skill_registry.get(skill_name)
 
         if not skill:
-            return f"❌ 未找到技能: {skill_name}"
+            available = [s.name for s in self.agent.skill_registry.list_all()[:10]]
+            hint = f"，当前可用技能: {', '.join(available)}" if available else ""
+            return (
+                f"未找到技能 '{skill_name}'{hint}。"
+                f"请检查技能名称是否正确，或使用 list_skills 查看所有可用技能。"
+            )
 
         body = skill.get_body() or "(无详细指令)"
 

@@ -54,6 +54,11 @@ class AgentFactory:
         return agent
 
     @staticmethod
+    def _normalize_skill_name(name: str) -> str:
+        """归一化技能名：下划线转连字符、统一小写"""
+        return name.lower().replace("_", "-")
+
+    @staticmethod
     def _apply_skill_filter(agent: Agent, profile: AgentProfile) -> None:
         if profile.skills_mode == SkillsMode.ALL or not profile.skills:
             return
@@ -63,20 +68,21 @@ class AgentFactory:
 
         removed = 0
         if profile.skills_mode == SkillsMode.INCLUSIVE:
-            keep = set(profile.skills)
+            keep = {AgentFactory._normalize_skill_name(s) for s in profile.skills}
             for skill_name in all_skills:
-                if skill_name not in keep:
+                if AgentFactory._normalize_skill_name(skill_name) not in keep:
                     registry.unregister(skill_name)
                     removed += 1
         elif profile.skills_mode == SkillsMode.EXCLUSIVE:
-            exclude = set(profile.skills)
+            exclude = {AgentFactory._normalize_skill_name(s) for s in profile.skills}
             for skill_name in all_skills:
-                if skill_name in exclude:
+                if AgentFactory._normalize_skill_name(skill_name) in exclude:
                     registry.unregister(skill_name)
                     removed += 1
 
         if removed:
             agent.skill_catalog.invalidate_cache()
+            agent.skill_catalog.generate_catalog()
             agent._update_skill_tools()
 
 

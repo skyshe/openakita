@@ -38,7 +38,7 @@ SYSTEM_PRESETS: list[AgentProfile] = [
         name="文助",
         description="办公文档处理专家，擅长 Word/PPT/Excel",
         type=AgentType.SYSTEM,
-        skills=["docx", "pptx", "xlsx", "pdf", "csv"],
+        skills=["docx", "pptx", "xlsx", "pdf"],
         skills_mode=SkillsMode.INCLUSIVE,
         custom_prompt=(
             "你是办公文档处理专家。优先使用文档相关工具处理用户需求。"
@@ -59,7 +59,7 @@ SYSTEM_PRESETS: list[AgentProfile] = [
         name="码哥",
         description="代码开发助手，擅长编码、调试和 Git 操作",
         type=AgentType.SYSTEM,
-        skills=["shell", "file", "web_search"],
+        skills=["run-shell", "read-file", "write-file", "list-directory", "web-search"],
         skills_mode=SkillsMode.INCLUSIVE,
         custom_prompt=(
             "你是编程开发助手。优先帮助用户编写代码、调试问题、管理 Git 仓库。"
@@ -80,7 +80,14 @@ SYSTEM_PRESETS: list[AgentProfile] = [
         name="网探",
         description="网络浏览与信息采集专家",
         type=AgentType.SYSTEM,
-        skills=["web_search", "browser", "screenshot"],
+        skills=[
+            "web-search", "news-search",
+            "browser-click", "browser-get-content", "browser-list-tabs",
+            "browser-navigate", "browser-new-tab", "browser-open",
+            "browser-screenshot", "browser-status", "browser-switch-tab",
+            "browser-task", "browser-type",
+            "desktop-screenshot",
+        ],
         skills_mode=SkillsMode.INCLUSIVE,
         custom_prompt=(
             "你是网络浏览与信息采集专家。擅长搜索信息、浏览网页、截图取证。"
@@ -101,7 +108,7 @@ SYSTEM_PRESETS: list[AgentProfile] = [
         name="数析",
         description="数据分析师，擅长数据处理、可视化和统计",
         type=AgentType.SYSTEM,
-        skills=["xlsx", "csv", "shell", "file"],
+        skills=["xlsx", "run-shell", "read-file", "write-file", "list-directory"],
         skills_mode=SkillsMode.INCLUSIVE,
         custom_prompt=(
             "你是数据分析专家。擅长数据清洗、统计分析、图表可视化。"
@@ -124,10 +131,12 @@ def deploy_system_presets(store: ProfileStore) -> int:
     """
     部署系统预置 Profile（首次启动或升级时调用）。
 
-    只添加不存在的预置 Profile，不覆盖已有的（用户可能自定义了 custom_prompt）。
+    - 不存在的预置 Profile 直接创建
+    - 已存在的 SYSTEM Profile 若 skills 列表与预置不同则同步更新
+      （保留用户自定义的 custom_prompt/name/icon 等字段）
 
     Returns:
-        部署的 Profile 数量
+        新增或升级的 Profile 数量
     """
     deployed = 0
     for preset in SYSTEM_PRESETS:
@@ -135,8 +144,26 @@ def deploy_system_presets(store: ProfileStore) -> int:
             store.save(preset)
             deployed += 1
             logger.info(f"Deployed system preset: {preset.id} ({preset.name})")
+        else:
+            existing = store.get(preset.id)
+            if (
+                existing
+                and existing.is_system
+                and sorted(existing.skills) != sorted(preset.skills)
+            ):
+                data = existing.to_dict()
+                data["skills"] = preset.skills
+                data["skills_mode"] = preset.skills_mode.value
+                updated = AgentProfile.from_dict(data)
+                store._cache[preset.id] = updated
+                store._persist(updated)
+                deployed += 1
+                logger.info(
+                    f"Upgraded system preset skills: {preset.id} "
+                    f"({existing.skills} -> {preset.skills})"
+                )
     if deployed:
-        logger.info(f"Deployed {deployed} system preset profile(s)")
+        logger.info(f"Deployed/upgraded {deployed} system preset profile(s)")
     return deployed
 
 

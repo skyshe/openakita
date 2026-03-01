@@ -50,10 +50,12 @@ Use `get_skill_info(skill_name)` to load full instructions when needed.
         skills = self.registry.list_all()
 
         if not skills:
-            return (
+            empty_catalog = (
                 "\n## Available Skills\n\n"
                 "No skills installed. Use the skill creation workflow to add new skills.\n"
             )
+            self._cached_catalog = empty_catalog
+            return empty_catalog
 
         skill_entries = []
         for skill in skills:
