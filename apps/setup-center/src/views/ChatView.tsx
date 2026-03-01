@@ -1930,7 +1930,9 @@ export function ChatView({
     isInitialScrollRef.current = true;
     if (multiAgentEnabled) {
       const conv = conversations.find((c) => c.id === activeConvId);
-      if (conv?.agentProfileId) setSelectedAgent(conv.agentProfileId);
+      const agentId = conv?.agentProfileId || "default";
+      setSelectedAgent(agentId);
+      prevSelectedAgentRef.current = agentId;
     }
   }, [activeConvId, conversations, hydrateConversationMessages, multiAgentEnabled]);
 
@@ -1977,12 +1979,22 @@ export function ChatView({
   }, [multiAgentEnabled, apiBaseUrl, serviceRunning]);
 
   // Sync selectedAgent → current conversation's agentProfileId
+  // Only react to selectedAgent changes (not activeConvId) to avoid overwriting
+  // a newly-switched conversation with the previous conversation's agent.
+  const prevSelectedAgentRef = useRef(selectedAgent);
   useEffect(() => {
-    if (!multiAgentEnabled || !activeConvId) return;
+    if (!multiAgentEnabled) return;
+    if (selectedAgent === prevSelectedAgentRef.current) {
+      prevSelectedAgentRef.current = selectedAgent;
+      return;
+    }
+    prevSelectedAgentRef.current = selectedAgent;
+    const convId = activeConvIdRef.current;
+    if (!convId) return;
     setConversations((prev) =>
-      prev.map((c) => c.id === activeConvId ? { ...c, agentProfileId: selectedAgent } : c)
+      prev.map((c) => c.id === convId ? { ...c, agentProfileId: selectedAgent } : c)
     );
-  }, [selectedAgent, activeConvId, multiAgentEnabled]);
+  }, [selectedAgent, multiAgentEnabled]);
 
   useEffect(() => {
     if (!agentMenuOpen) return;
@@ -2032,6 +2044,7 @@ export function ChatView({
               lastMessage: b.lastMessage || local.lastMessage,
               timestamp: Math.max(local.timestamp || 0, b.timestamp || 0),
               messageCount: Math.max(local.messageCount || 0, b.messageCount || 0),
+              agentProfileId: local.agentProfileId || b.agentProfileId,
             };
           });
           const backendIds = new Set(restoredConvs.map((c) => c.id));
