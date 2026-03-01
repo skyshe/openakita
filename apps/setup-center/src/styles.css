@@ -34,6 +34,12 @@
   --fg-secondary: rgba(17, 24, 39, 0.50);
   --panel-glass: rgba(255, 255, 255, 0.06);
   --card-bg: #ffffff;
+  --bg-subtle: #f1f5f9;
+  --ok-bg: #dcfce7;
+  --err-bg: #fee2e2;
+  --warn-bg: #fef3c7;
+  --warn: #d97706;
+  --err: #dc2626;
 }
 
 :root[data-theme="dark"] {
@@ -72,6 +78,12 @@
   --text-secondary: rgba(255, 255, 255, 0.50);
   --fg-secondary: rgba(255, 255, 255, 0.45);
   --panel-glass: rgba(255, 255, 255, 0.03);
+  --bg-subtle: rgba(255, 255, 255, 0.07);
+  --ok-bg: rgba(16, 185, 129, 0.15);
+  --err-bg: rgba(239, 68, 68, 0.15);
+  --warn-bg: rgba(245, 158, 11, 0.15);
+  --warn: #fbbf24;
+  --err: #f87171;
 }
 
 /* ── Scrollbar: hidden by default, visible on hover ── */
