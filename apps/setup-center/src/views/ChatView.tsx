@@ -96,7 +96,7 @@ function buildChainFromSummary(summary: ChainSummaryItem[]): ChainGroup[] {
 /** 用后端数据补全本地消息中缺失的 content / thinkingChain */
 function patchMessagesWithBackend(
   localMsgs: ChatMessage[],
-  backendMsgs: { role: string; content: string; chain_summary?: ChainSummaryItem[] }[],
+  backendMsgs: { role: string; content: string; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[] }[],
 ): ChatMessage[] {
   const backendAssistant = backendMsgs.filter((m) => m.role === "assistant");
   let aIdx = 0;
@@ -122,6 +122,10 @@ function patchMessagesWithBackend(
       if (cleaned.length !== m.thinkingChain.length) {
         patches.thinkingChain = cleaned.length > 0 ? cleaned : undefined;
       }
+    }
+
+    if (!m.artifacts?.length && backend.artifacts?.length) {
+      patches.artifacts = backend.artifacts;
     }
 
     if (Object.keys(patches).length > 0) {
@@ -1181,7 +1185,7 @@ function MessageBubble({
                   </div>
                 );
               }
-              {(() => {
+              return (() => {
                 const FileIcon = getFileTypeIcon(art.name || "");
                 const sizeStr = art.size != null
                   ? art.size > 1048576 ? `${(art.size / 1048576).toFixed(1)} MB` : `${(art.size / 1024).toFixed(1)} KB`
@@ -1235,7 +1239,7 @@ function MessageBubble({
                     <IconDownload size={14} style={{ opacity: 0.4, flexShrink: 0 }} />
                   </div>
                 );
-              })()}
+              })();
             })}
           </div>
         )}
@@ -1852,13 +1856,14 @@ export function ChatView({
   const hydrateSeqRef = useRef(0);
 
   const mapBackendHistoryToMessages = useCallback(
-    (rows: { id: string; role: string; content: string; timestamp: number; chain_summary?: ChainSummaryItem[] }[]): ChatMessage[] => {
+    (rows: { id: string; role: string; content: string; timestamp: number; chain_summary?: ChainSummaryItem[]; artifacts?: ChatArtifact[] }[]): ChatMessage[] => {
       return rows.map((m) => ({
         id: m.id,
         role: m.role as "user" | "assistant" | "system",
         content: m.content,
         timestamp: m.timestamp,
         ...(m.chain_summary?.length ? { thinkingChain: buildChainFromSummary(m.chain_summary) } : {}),
+        ...(m.artifacts?.length ? { artifacts: m.artifacts } : {}),
       }));
     },
     [],

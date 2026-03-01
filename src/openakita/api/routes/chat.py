@@ -284,8 +284,11 @@ async def _stream_chat(
                             }
                             _collected_artifacts.append(art_data)
                             yield _sse("artifact", art_data)
-                except (json.JSONDecodeError, TypeError, KeyError):
-                    pass
+                except (json.JSONDecodeError, TypeError, KeyError) as exc:
+                    logger.warning(
+                        f"[Chat API] Artifact parse failed for {event.get('tool')}: {exc!r}, "
+                        f"result preview: {str(event.get('result', ''))[:200]}"
+                    )
 
             # Forward artifact receipts from sub-agents (via orchestrator delegation).
             # delegate_parallel may contain multiple __ARTIFACT_RECEIPTS__ blocks.
