@@ -938,6 +938,8 @@ function TroubleshootPanel({ t }: { t: (k: string) => string }) {
   );
 }
 
+const THEME_LABELS: Record<Theme, string> = { system: "主题: 跟随系统", dark: "主题: 暗色", light: "主题: 亮色" };
+
 export function App() {
   const { t, i18n } = useTranslation();
   const [themePrefState, setThemePrefState] = useState<Theme>(getThemePref());
@@ -952,6 +954,7 @@ export function App() {
     else if (themePrefState === "dark") next = "light";
     else next = "system";
     setThemePref(next);
+    setNotice(THEME_LABELS[next]);
   }, [themePrefState]);
   const [info, setInfo] = useState<PlatformInfo | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
