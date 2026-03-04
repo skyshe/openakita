@@ -193,6 +193,7 @@
     "stopFailed": "服务仍在运行，可能需要手动关闭进程",
     "troubleshootTitle": "故障排除",
     "troubleshootListProcess": "查看进程",
+    "troubleshootCheckPort": "检查端口",
     "troubleshootKillProcess": "终止进程",
     "troubleshootCopy": "复制",
     "troubleshootCopied": "已复制",

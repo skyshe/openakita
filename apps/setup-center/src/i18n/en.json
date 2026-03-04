@@ -193,6 +193,7 @@
     "stopFailed": "Service is still running. You may need to stop the process manually.",
     "troubleshootTitle": "Troubleshooting",
     "troubleshootListProcess": "List processes",
+    "troubleshootCheckPort": "Check port",
     "troubleshootKillProcess": "Kill process",
     "troubleshootCopy": "Copy",
     "troubleshootCopied": "Copied",

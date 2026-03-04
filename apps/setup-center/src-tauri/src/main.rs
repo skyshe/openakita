@@ -969,12 +969,28 @@ fn kill_pid(pid: u32) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
+        let pid_str = pid.to_string();
+
+        // SIGTERM: 允许进程优雅退出
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid_str])
+            .status();
+
+        // 等待最多 2 秒确认退出
+        for _ in 0..10 {
+            if !is_pid_running(pid) {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+
+        // SIGKILL: 进程未响应 SIGTERM（可能事件循环卡死），强制终止
         let status = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
+            .args(["-KILL", &pid_str])
             .status()
-            .map_err(|e| format!("kill failed: {e}"))?;
-        if !status.success() {
-            return Err(format!("kill failed: {status}"));
+            .map_err(|e| format!("kill -KILL failed: {e}"))?;
+        if !status.success() && is_pid_running(pid) {
+            return Err(format!("kill -KILL failed: {status}"));
         }
         Ok(())
     }
@@ -1148,6 +1164,7 @@ fn kill_openakita_orphans() -> Vec<u32> {
             "ps aux | grep '[o]penakita\\.main.*serve' | awk '{print $2}'",
             "ps aux | grep '[o]penakita-server' | awk '{print $2}'",
         ];
+        let mut pids_to_kill: Vec<u32> = Vec::new();
         for pattern in &patterns {
             if let Ok(out) = Command::new("sh")
                 .args(["-c", pattern])
@@ -1156,15 +1173,33 @@ fn kill_openakita_orphans() -> Vec<u32> {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 for line in stdout.lines() {
                     if let Ok(pid) = line.trim().parse::<u32>() {
-                        if is_pid_running(pid) && !killed.contains(&pid) {
-                            let _ = Command::new("kill")
-                                .args(["-TERM", &pid.to_string()])
-                                .status();
-                            killed.push(pid);
+                        if is_pid_running(pid) && !killed.contains(&pid) && !pids_to_kill.contains(&pid) {
+                            pids_to_kill.push(pid);
                         }
                     }
                 }
             }
+        }
+
+        // SIGTERM
+        for &pid in &pids_to_kill {
+            let _ = Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .status();
+        }
+
+        if !pids_to_kill.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+
+        // SIGKILL 升级：对 SIGTERM 后仍存活的进程强制终止
+        for pid in pids_to_kill {
+            if is_pid_running(pid) {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &pid.to_string()])
+                    .status();
+            }
+            killed.push(pid);
         }
     }
     killed

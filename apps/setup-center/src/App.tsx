@@ -1054,11 +1054,33 @@ async function proxyFetch(url: string, options?: {
 }
 
 // ── 故障排除面板组件 ──
-function TroubleshootPanel({ t }: { t: (k: string) => string }) {
+const TROUBLESHOOT_CMDS: Record<string, { list: string; kill: string; port: string }> = {
+  windows: {
+    list: 'tasklist | findstr "openakita"',
+    kill: "taskkill /F /PID <PID>",
+    port: "netstat -ano | findstr :18900",
+  },
+  macos: {
+    list: "ps aux | grep '[o]penakita'",
+    kill: "kill -9 <PID>",
+    port: "lsof -i :18900",
+  },
+  linux: {
+    list: "ps aux | grep '[o]penakita'",
+    kill: "kill -9 <PID>",
+    port: "ss -tlnp | grep 18900",
+  },
+};
+
+function TroubleshootPanel({ t, os }: { t: (k: string) => string; os: string }) {
   const [copied, setCopied] = useState<string | null>(null);
-  const isWin = navigator.platform?.toLowerCase().includes("win");
-  const listCmd = isWin ? 'tasklist | findstr python' : 'ps aux | grep openakita';
-  const killCmd = isWin ? 'taskkill /F /PID <PID>' : 'kill -9 <PID>';
+  const cmds = TROUBLESHOOT_CMDS[os] ?? TROUBLESHOOT_CMDS.linux;
+
+  const rows: { label: string; cmd: string; id: string }[] = [
+    { label: t("status.troubleshootListProcess"), cmd: cmds.list, id: "list" },
+    { label: t("status.troubleshootCheckPort"), cmd: cmds.port, id: "port" },
+    { label: t("status.troubleshootKillProcess"), cmd: cmds.kill, id: "kill" },
+  ];
 
   const copyText = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -1071,20 +1093,15 @@ function TroubleshootPanel({ t }: { t: (k: string) => string }) {
       <div style={{ fontWeight: 600, marginBottom: 6 }}>{t("status.troubleshootTitle")}</div>
       <div style={{ marginBottom: 4, color: "var(--muted)" }}>{t("status.troubleshootTip")}</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ color: "var(--muted)", minWidth: 60 }}>{t("status.troubleshootListProcess")}:</span>
-          <code style={{ background: "var(--nav-hover)", border: "1px solid var(--line)", padding: "1px 6px", borderRadius: 3, fontSize: 11, flex: 1, color: "var(--text)" }}>{listCmd}</code>
-          <button className="btnSmall" style={{ fontSize: 10, padding: "1px 6px" }} onClick={() => copyText(listCmd, "list")}>
-            {copied === "list" ? t("status.troubleshootCopied") : t("status.troubleshootCopy")}
-          </button>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ color: "var(--muted)", minWidth: 60 }}>{t("status.troubleshootKillProcess")}:</span>
-          <code style={{ background: "var(--nav-hover)", border: "1px solid var(--line)", padding: "1px 6px", borderRadius: 3, fontSize: 11, flex: 1, color: "var(--text)" }}>{killCmd}</code>
-          <button className="btnSmall" style={{ fontSize: 10, padding: "1px 6px" }} onClick={() => copyText(killCmd, "kill")}>
-            {copied === "kill" ? t("status.troubleshootCopied") : t("status.troubleshootCopy")}
-          </button>
-        </div>
+        {rows.map(({ label, cmd, id }) => (
+          <div key={id} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ color: "var(--muted)", minWidth: 60 }}>{label}:</span>
+            <code style={{ background: "var(--nav-hover)", border: "1px solid var(--line)", padding: "1px 6px", borderRadius: 3, fontSize: 11, flex: 1, color: "var(--text)" }}>{cmd}</code>
+            <button className="btnSmall" style={{ fontSize: 10, padding: "1px 6px" }} onClick={() => copyText(cmd, id)}>
+              {copied === id ? t("status.troubleshootCopied") : t("status.troubleshootCopy")}
+            </button>
+          </div>
+        ))}
       </div>
       <div style={{ marginTop: 6, color: "var(--muted)", fontSize: 11 }}>{t("status.troubleshootRestart")}</div>
     </div>
@@ -4660,7 +4677,7 @@ export function App() {
             )}
             {/* Troubleshooting panel */}
             {(heartbeatState === "dead" && !serviceStatus?.running) && (
-              <TroubleshootPanel t={t} />
+              <TroubleshootPanel t={t} os={info?.os ?? ""} />
             )}
           </div>
 
