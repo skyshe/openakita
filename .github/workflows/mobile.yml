@@ -47,13 +47,19 @@ jobs:
         run: npx cap sync android
 
       - name: Decode keystore (if available)
-        if: ${{ env.ANDROID_KEYSTORE_BASE64 != '' }}
+        id: keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build signed APK
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: steps.keystore.outputs.has_keystore == 'true'
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -66,7 +72,7 @@ jobs:
             -Pandroid.injected.signing.key.password="$ANDROID_KEY_PASSWORD"
 
       - name: Build debug APK (fallback)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 == '' }}
+        if: steps.keystore.outputs.has_keystore == 'false'
         working-directory: apps/setup-center/android
         run: ./gradlew assembleDebug
 
@@ -122,8 +128,20 @@ jobs:
       - name: Sync Capacitor iOS
         run: npx cap sync ios
 
+      - name: Check iOS signing secrets
+        id: ios_signing
+        env:
+          IOS_CERT: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_PP: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          if [ -n "$IOS_CERT" ] && [ -n "$IOS_PP" ]; then
+            echo "has_signing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_signing=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Import signing certificate
-        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        if: steps.ios_signing.outputs.has_signing == 'true'
         env:
           IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
           IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
@@ -142,7 +160,7 @@ jobs:
           security list-keychain -d user -s "$KEYCHAIN_PATH"
 
       - name: Import provisioning profile
-        if: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 != '' }}
+        if: steps.ios_signing.outputs.has_signing == 'true'
         env:
           IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
@@ -153,7 +171,7 @@ jobs:
           cp "$PP_PATH" ~/Library/MobileDevice/Provisioning\ Profiles/"$UUID".mobileprovision
 
       - name: Build iOS archive
-        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        if: steps.ios_signing.outputs.has_signing == 'true'
         env:
           IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
         working-directory: apps/setup-center/ios/App
@@ -169,9 +187,11 @@ jobs:
             -allowProvisioningUpdates
 
       - name: Export IPA
-        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        if: steps.ios_signing.outputs.has_signing == 'true'
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
         run: |
-          cat > $RUNNER_TEMP/ExportOptions.plist << 'PLIST'
+          cat > $RUNNER_TEMP/ExportOptions.plist << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -179,7 +199,7 @@ jobs:
             <key>method</key>
             <string>app-store</string>
             <key>teamID</key>
-            <string>${{ secrets.IOS_TEAM_ID }}</string>
+            <string>${IOS_TEAM_ID}</string>
           </dict>
           </plist>
           PLIST
@@ -190,7 +210,7 @@ jobs:
             -exportPath $RUNNER_TEMP/ipa
 
       - name: Build unsigned (debug)
-        if: ${{ secrets.IOS_CERTIFICATE_BASE64 == '' }}
+        if: steps.ios_signing.outputs.has_signing == 'false'
         working-directory: apps/setup-center/ios/App
         run: |
           xcodebuild build \
@@ -201,14 +221,14 @@ jobs:
             -derivedDataPath $RUNNER_TEMP/ios-build || true
 
       - name: Upload IPA artifact
-        if: ${{ secrets.IOS_CERTIFICATE_BASE64 != '' }}
+        if: steps.ios_signing.outputs.has_signing == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ios-ipa
           path: ${{ runner.temp }}/ipa/*.ipa
 
       - name: Upload IPA to Release
-        if: startsWith(env.RELEASE_TAG, 'v') && secrets.IOS_CERTIFICATE_BASE64 != ''
+        if: steps.ios_signing.outputs.has_signing == 'true' && startsWith(env.RELEASE_TAG, 'v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
