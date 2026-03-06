@@ -106,7 +106,23 @@ def _mount_web_frontend(app: FastAPI) -> None:
 
     Uses StaticFiles for /web/* with html=True for SPA fallback (index.html).
     """
+    import mimetypes
+
     from fastapi.staticfiles import StaticFiles
+
+    # On some Windows systems the registry maps .js to text/plain, causing
+    # browsers to reject ES module scripts.  Ensure correct MIME types are
+    # registered before StaticFiles serves any content.
+    _mime_overrides = {
+        ".js": "application/javascript",
+        ".mjs": "application/javascript",
+        ".css": "text/css",
+        ".json": "application/json",
+        ".wasm": "application/wasm",
+        ".svg": "image/svg+xml",
+    }
+    for ext, mime in _mime_overrides.items():
+        mimetypes.add_type(mime, ext)
 
     web_dist = _find_web_dist()
     if not web_dist:
