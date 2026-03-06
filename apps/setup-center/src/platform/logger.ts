@@ -95,23 +95,25 @@ async function flushToTauri(lines: string[]): Promise<void> {
   }
 }
 
+function _getApiBase(): string {
+  if (!IS_CAPACITOR) return "";
+  try {
+    const raw = localStorage.getItem("openakita_servers");
+    const activeId = localStorage.getItem("openakita_active_server");
+    if (raw && activeId) {
+      const list = JSON.parse(raw) as { id: string; url: string }[];
+      const s = list.find((x) => x.id === activeId);
+      if (s) return s.url;
+    }
+  } catch { /* ignore */ }
+  return "";
+}
+
 async function flushToApi(lines: string[]): Promise<void> {
   try {
-    let base = "";
-    if (IS_CAPACITOR) {
-      const { getActiveServer } = await import("./servers");
-      base = getActiveServer()?.url || "";
-    }
+    const base = _getApiBase();
+    if (IS_CAPACITOR && !base) return;
     const url = `${base}/api/logs/frontend`;
-
-    // Prefer sendBeacon for reliability during page unload
-    if (navigator.sendBeacon) {
-      const sent = navigator.sendBeacon(
-        url,
-        new Blob([JSON.stringify({ lines })], { type: "application/json" }),
-      );
-      if (sent) return;
-    }
 
     await fetch(url, {
       method: "POST",
