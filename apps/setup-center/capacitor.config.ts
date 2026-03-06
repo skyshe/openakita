@@ -12,6 +12,7 @@ const config: CapacitorConfig = {
   },
   android: {
     allowMixedContent: true,
+    webContentsDebuggingEnabled: true,
   },
   plugins: {
     CapacitorCookies: {
