@@ -3599,6 +3599,7 @@ export function App() {
     switch (sid) {
       case "im":
         return [
+          "IM_CHAIN_PUSH",
           "TELEGRAM_ENABLED", "TELEGRAM_BOT_TOKEN", "TELEGRAM_PROXY",
           "TELEGRAM_REQUIRE_PAIRING", "TELEGRAM_PAIRING_CODE", "TELEGRAM_WEBHOOK_URL",
           "FEISHU_ENABLED", "FEISHU_APP_ID", "FEISHU_APP_SECRET",
@@ -6957,6 +6958,7 @@ export function App() {
       "ORCHESTRATION_HEARTBEAT_INTERVAL",
       "ORCHESTRATION_HEALTH_CHECK_INTERVAL",
       // IM
+      "IM_CHAIN_PUSH",
       "TELEGRAM_ENABLED",
       "TELEGRAM_BOT_TOKEN",
       "TELEGRAM_PROXY",
