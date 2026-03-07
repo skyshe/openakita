@@ -6,6 +6,7 @@
 import { IS_TAURI, IS_WEB, IS_CAPACITOR } from "./detect";
 export { IS_TAURI, IS_WEB, IS_CAPACITOR };
 
+<<<<<<< HEAD
 // ---------------------------------------------------------------------------
 // Core: invoke & listen
 // ---------------------------------------------------------------------------

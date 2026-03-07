@@ -272,6 +272,7 @@
   },
   "status": {
     "title": "系统状态",
+    "clickToCopy": "点击复制",
     "healthy": "健康",
     "unhealthy": "异常",
     "cooldown": "冷却中",

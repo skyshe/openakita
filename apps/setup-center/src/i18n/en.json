@@ -272,6 +272,7 @@
   },
   "status": {
     "title": "System Status",
+    "clickToCopy": "Click to copy",
     "healthy": "Healthy",
     "unhealthy": "Unhealthy",
     "cooldown": "Cooling down",

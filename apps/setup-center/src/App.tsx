@@ -36,6 +36,7 @@ import {
 import logoUrl from "./assets/logo.png";
 import "highlight.js/styles/github.css";
 import { getThemePref, setThemePref, THEME_CHANGE_EVENT, type Theme } from "./theme";
+import { copyToClipboard } from "./utils/clipboard";
 import { BUILTIN_PROVIDERS, STT_RECOMMENDED_MODELS, PIP_INDEX_PRESETS } from "./constants";
 import {
   isLocalProvider, localProviderPlaceholderKey, friendlyFetchError,
@@ -3959,9 +3960,16 @@ export function App() {
                     <span className="epTableName">{e.name}</span>
                     <span className="epTableModel">{e.model}</span>
                     <span>{e.keyPresent ? <DotGreen /> : <DotGray />}</span>
-                    <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={fullError || undefined}>
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }} title={fullError ? (t("status.clickToCopy", "点击复制") + ": " + fullError) : undefined}>
                       <span className={"healthDot " + dotClass} />
-                      <span className="epTableStatus" style={fullError ? { cursor: "help" } : undefined}>{label}</span>
+                      <span
+                        className="epTableStatus"
+                        style={fullError ? { cursor: "pointer" } : undefined}
+                        onClick={fullError ? async (e) => { e.stopPropagation(); const ok = await copyToClipboard(fullError); if (ok) setNotice(t("version.copied")); } : undefined}
+                        role={fullError ? "button" : undefined}
+                      >
+                        {label}
+                      </span>
                     </span>
                     <button className="btnSmall" onClick={async () => {
                       setHealthChecking(e.name);
@@ -7580,7 +7588,7 @@ export function App() {
         {renderOnboarding()}
 
         <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
-        <ToastContainer busy={busy} notice={notice} error={error} onDismissNotice={() => setNotice(null)} onDismissError={() => setError(null)} />
+        <ToastContainer busy={busy} notice={notice} error={error} onDismissNotice={() => setNotice(null)} onDismissError={() => setError(null)} onCopySuccess={() => setNotice(t("version.copied"))} errorClickToCopyTitle={t("status.clickToCopy", "点击复制")} />
       </div>
       </EnvFieldContext.Provider>
     );
@@ -8024,7 +8032,7 @@ export function App() {
         )}
 
         <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
-        <ToastContainer busy={busy} notice={notice} error={error} onDismissNotice={() => setNotice(null)} onDismissError={() => setError(null)} />
+        <ToastContainer busy={busy} notice={notice} error={error} onDismissNotice={() => setNotice(null)} onDismissError={() => setError(null)} onCopySuccess={() => setNotice(t("version.copied"))} errorClickToCopyTitle={t("status.clickToCopy", "点击复制")} />
 
         {view === "wizard" ? (() => {
           const saveConfig = getFooterSaveConfig();
