@@ -6,6 +6,7 @@ import {
   useMemo,
   useLayoutEffect,
 } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
   ReactFlow,
@@ -57,6 +58,7 @@ import {
 import { safeFetch } from "../providers";
 import { openPopupWindow, canOpenPopupWindow, IS_CAPACITOR } from "../platform";
 import { OrgInboxSidebar } from "../components/OrgInboxSidebar";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 // ── Time helpers (always show local timezone) ──
 
@@ -334,6 +336,7 @@ const STATUS_LABELS: Record<string, string> = {
 
 function OrgNodeComponent({ data, selected }: { data: OrgNodeData; selected: boolean }) {
   const [hovered, setHovered] = useState(false);
+  const nodeRef = useRef<HTMLDivElement>(null);
   const deptColor = getDeptColor(data.department);
   const statusColor = STATUS_COLORS[data.status] || "var(--muted)";
   const isFrozen = data.status === "frozen";
@@ -350,6 +353,7 @@ function OrgNodeComponent({ data, selected }: { data: OrgNodeData; selected: boo
 
   return (
     <div
+      ref={nodeRef}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
@@ -522,24 +526,33 @@ function OrgNodeComponent({ data, selected }: { data: OrgNodeData; selected: boo
         )}
       </div>
 
-      {/* Hover tooltip */}
-      {hovered && rt && (
-        <div style={{
-          position: "absolute", left: "105%", top: 0, zIndex: 10000,
-          background: "var(--card-bg, #fff)", border: "1px solid var(--line)",
-          borderRadius: 6, padding: "8px 10px", minWidth: 140,
-          pointerEvents: "none",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.15)", fontSize: 10,
-        }}>
-          <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 11 }}>{data.role_title}</div>
-          <div style={{ color: "#6b7280", lineHeight: 1.6 }}>
-            <div>状态: <span style={{ color: statusColor, fontWeight: 500 }}>{STATUS_LABELS[data.status] || data.status}</span></div>
-            {idleSecs != null && <div>空闲: {idleSecs >= 3600 ? `${Math.floor(idleSecs / 3600)}h${Math.floor((idleSecs % 3600) / 60)}m` : idleSecs >= 60 ? `${Math.floor(idleSecs / 60)}m` : `${idleSecs}s`}</div>}
-            {pendingMsgs != null && <div>待处理: {pendingMsgs} 条消息</div>}
-            {data.current_task && <div style={{ marginTop: 2, color: "#b45309" }}>任务: {data.current_task.slice(0, 50)}</div>}
-            {isAnomaly && <div style={{ marginTop: 2, color: "#f59e0b", fontWeight: 500 }}>{typeof isAnomaly === "string" ? isAnomaly : "异常"}</div>}
-          </div>
-        </div>
+      {/* Hover tooltip via Portal to escape ReactFlow stacking context */}
+      {hovered && rt && nodeRef.current && createPortal(
+        (() => {
+          const rect = nodeRef.current!.getBoundingClientRect();
+          return (
+            <div style={{
+              position: "fixed",
+              left: rect.right + 8,
+              top: rect.top,
+              zIndex: 99999,
+              background: "var(--card-bg, #fff)", border: "1px solid var(--line)",
+              borderRadius: 6, padding: "8px 10px", minWidth: 140,
+              pointerEvents: "none",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.15)", fontSize: 10,
+            }}>
+              <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 11 }}>{data.role_title}</div>
+              <div style={{ color: "#6b7280", lineHeight: 1.6 }}>
+                <div>状态: <span style={{ color: statusColor, fontWeight: 500 }}>{STATUS_LABELS[data.status] || data.status}</span></div>
+                {idleSecs != null && <div>空闲: {idleSecs >= 3600 ? `${Math.floor(idleSecs / 3600)}h${Math.floor((idleSecs % 3600) / 60)}m` : idleSecs >= 60 ? `${Math.floor(idleSecs / 60)}m` : `${idleSecs}s`}</div>}
+                {pendingMsgs != null && <div>待处理: {pendingMsgs} 条消息</div>}
+                {data.current_task && <div style={{ marginTop: 2, color: "#b45309" }}>任务: {data.current_task.slice(0, 50)}</div>}
+                {isAnomaly && <div style={{ marginTop: 2, color: "#f59e0b", fontWeight: 500 }}>{typeof isAnomaly === "string" ? isAnomaly : "异常"}</div>}
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
       )}
 
       <Handle type="source" position={Position.Bottom} style={{ background: "var(--primary)", width: 8, height: 8 }} />
@@ -587,6 +600,11 @@ export function OrgEditorView({
   const [expandedThinkingIdx, setExpandedThinkingIdx] = useState<number | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "ok" | "error" } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  type AgentProfileEntry = { id: string; name: string; description: string; icon: string };
+  const [agentProfiles, setAgentProfiles] = useState<AgentProfileEntry[]>([]);
+  const [agentProfileSearch, setAgentProfileSearch] = useState("");
+  const [agentDropdownOpen, setAgentDropdownOpen] = useState(false);
 
   // Activity feed state
   type ActivityEvent = { id: string; time: number; event: string; data: any };
@@ -715,14 +733,23 @@ export function OrgEditorView({
     }
   }, [apiBaseUrl]);
 
+  const fetchAgentProfiles = useCallback(async () => {
+    try {
+      const res = await safeFetch(`${apiBaseUrl}/api/agents/profiles`);
+      const data = await res.json();
+      setAgentProfiles(data.profiles || []);
+    } catch { /* ignore */ }
+  }, [apiBaseUrl]);
+
   useEffect(() => {
     if (visible) {
       fetchOrgList();
       fetchTemplates();
       fetchMcpServers();
       fetchAvailableSkills();
+      fetchAgentProfiles();
     }
-  }, [visible, fetchOrgList, fetchTemplates, fetchMcpServers, fetchAvailableSkills]);
+  }, [visible, fetchOrgList, fetchTemplates, fetchMcpServers, fetchAvailableSkills, fetchAgentProfiles]);
 
   useEffect(() => {
     if (selectedOrgId) {
@@ -1261,19 +1288,9 @@ export function OrgEditorView({
                 <IconStop size={12} /> 停止
               </button>
             )}
-            <div style={{ position: "relative" }}>
-              {confirmReset ? (
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "var(--danger)" }}>确认重置?</span>
-                  <button className="btnSmall" onClick={handleResetOrg} style={{ color: "var(--danger)", fontSize: 11, padding: "2px 6px" }}>确认</button>
-                  <button className="btnSmall" onClick={() => setConfirmReset(false)} style={{ fontSize: 11, padding: "2px 6px" }}>取消</button>
-                </div>
-              ) : (
-                <button className="btnSmall" onClick={() => setConfirmReset(true)} title="重置组织：清空所有运行数据，恢复为初始状态">
-                  <IconRefresh size={12} /> {!isMobile && "重置"}
-                </button>
-              )}
-            </div>
+            <button className="btnSmall" onClick={() => setConfirmReset(true)} title="重置组织：清空所有运行数据，恢复为初始状态">
+              <IconRefresh size={12} /> {!isMobile && "重置"}
+            </button>
             <button
               className="btnSmall"
               onClick={() => setLiveMode(!liveMode)}
@@ -2349,17 +2366,86 @@ export function OrgEditorView({
                 </div>
                 {selectedNode.agent_source.startsWith("ref:") && (
                   <>
-                    <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>Agent Profile ID</label>
-                    <input
-                      className="input"
-                      value={selectedNode.agent_profile_id || ""}
-                      onChange={(e) => {
-                        updateNodeData("agent_profile_id", e.target.value || null);
-                        updateNodeData("agent_source", `ref:${e.target.value}`);
-                      }}
-                      placeholder="profile_id"
-                      style={{ fontSize: 13 }}
-                    />
+                    <label style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)" }}>选择 Agent</label>
+                    <div style={{ position: "relative" }}>
+                      <div
+                        className="input"
+                        onClick={() => { setAgentDropdownOpen(!agentDropdownOpen); setAgentProfileSearch(""); }}
+                        style={{
+                          fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between",
+                          background: selectedNode.agent_profile_id ? undefined : "var(--bg-app)",
+                        }}
+                      >
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {(() => {
+                            const ap = agentProfiles.find(p => p.id === selectedNode.agent_profile_id);
+                            return ap ? `${ap.icon || "🤖"} ${ap.name}` : "点击选择...";
+                          })()}
+                        </span>
+                        <IconChevronDown size={12} style={{ flexShrink: 0, opacity: 0.5 }} />
+                      </div>
+                      {agentDropdownOpen && (
+                        <>
+                        <div style={{ position: "fixed", inset: 0, zIndex: 99 }} onClick={() => setAgentDropdownOpen(false)} />
+                        <div style={{
+                          position: "absolute", top: "100%", left: 0, right: 0, zIndex: 100,
+                          background: "var(--card-bg, #fff)", border: "1px solid var(--line)",
+                          borderRadius: 6, boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                          maxHeight: 240, display: "flex", flexDirection: "column",
+                        }}>
+                          <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--line)" }}>
+                            <input
+                              className="input"
+                              value={agentProfileSearch}
+                              onChange={(e) => setAgentProfileSearch(e.target.value)}
+                              placeholder="搜索 Agent..."
+                              autoFocus
+                              style={{ fontSize: 12, width: "100%" }}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                          </div>
+                          <div style={{ overflowY: "auto", flex: 1 }}>
+                            {agentProfiles.length === 0 ? (
+                              <div style={{ padding: 12, color: "var(--muted)", textAlign: "center", fontSize: 11 }}>
+                                暂无可用 Agent，请先在 Agent 管理页创建
+                              </div>
+                            ) : (
+                              agentProfiles
+                                .filter(ap => {
+                                  if (!agentProfileSearch) return true;
+                                  const q = agentProfileSearch.toLowerCase();
+                                  return ap.name.toLowerCase().includes(q) || ap.id.toLowerCase().includes(q) || (ap.description || "").toLowerCase().includes(q);
+                                })
+                                .map(ap => (
+                                  <div
+                                    key={ap.id}
+                                    onClick={() => {
+                                      updateNodeData("agent_profile_id", ap.id);
+                                      updateNodeData("agent_source", `ref:${ap.id}`);
+                                      setAgentDropdownOpen(false);
+                                    }}
+                                    style={{
+                                      padding: "6px 10px", cursor: "pointer", fontSize: 12,
+                                      display: "flex", alignItems: "center", gap: 8,
+                                      background: selectedNode.agent_profile_id === ap.id ? "rgba(14,165,233,0.08)" : undefined,
+                                    }}
+                                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-hover, rgba(0,0,0,0.04))")}
+                                    onMouseLeave={(e) => (e.currentTarget.style.background = selectedNode.agent_profile_id === ap.id ? "rgba(14,165,233,0.08)" : "")}
+                                  >
+                                    <span style={{ fontSize: 16, flexShrink: 0 }}>{ap.icon || "🤖"}</span>
+                                    <div style={{ minWidth: 0, flex: 1 }}>
+                                      <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ap.name}</div>
+                                      {ap.description && <div style={{ fontSize: 10, color: "var(--muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ap.description}</div>}
+                                    </div>
+                                    {selectedNode.agent_profile_id === ap.id && <IconCheck size={14} style={{ color: "var(--primary)", flexShrink: 0 }} />}
+                                  </div>
+                                ))
+                            )}
+                          </div>
+                        </div>
+                        </>
+                      )}
+                    </div>
                   </>
                 )}
               </div>
@@ -2885,29 +2971,30 @@ export function OrgEditorView({
                   <div style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", marginBottom: 8 }}>
                     权限控制
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                     {([
-                      { key: "can_delegate", label: "委派任务" },
-                      { key: "can_escalate", label: "上报问题" },
-                      { key: "can_request_scaling", label: "申请扩编" },
-                      { key: "ephemeral", label: "临时节点" },
-                    ] as const).map(({ key, label }) => (
+                      { key: "can_delegate", label: "委派任务", desc: "可向下级分配工作" },
+                      { key: "can_escalate", label: "上报问题", desc: "可向上级反馈异常" },
+                      { key: "can_request_scaling", label: "申请扩编", desc: "可请求增加人手" },
+                      { key: "ephemeral", label: "临时节点", desc: "空闲时自动回收" },
+                    ] as const).map(({ key, label, desc }) => (
                       <label
                         key={key}
                         style={{
-                          display: "flex", alignItems: "center", gap: 6,
-                          fontSize: 12, padding: "4px 6px", borderRadius: 6,
+                          display: "flex", alignItems: "center", gap: 8,
+                          fontSize: 12, padding: "5px 6px", borderRadius: 6,
                           cursor: "pointer",
                           background: selectedNode[key] ? "rgba(14,165,233,0.06)" : "transparent",
                         }}
                       >
                         <input
                           type="checkbox"
-                          checked={selectedNode[key]}
+                          checked={!!selectedNode[key]}
                           onChange={(e) => updateNodeData(key, e.target.checked)}
                           style={{ accentColor: "var(--primary)", flexShrink: 0 }}
                         />
-                        <span style={{ whiteSpace: "nowrap" }}>{label}</span>
+                        <span>{label}</span>
+                        <span style={{ color: "var(--muted)", fontSize: 10, marginLeft: "auto" }}>{desc}</span>
                       </label>
                     ))}
                   </div>
@@ -3372,6 +3459,10 @@ export function OrgEditorView({
           {toast.message}
         </div>
       )}
+      <ConfirmDialog
+        dialog={confirmReset ? { message: "确认重置该组织吗？将清空所有运行数据（黑板、消息、事件日志），恢复为初始状态。此操作不可撤销。", onConfirm: handleResetOrg } : null}
+        onClose={() => setConfirmReset(false)}
+      />
     </div>
   );
 }

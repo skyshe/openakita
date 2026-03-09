@@ -2543,8 +2543,12 @@ export function ChatView({
   // ── 新建对话 ──
   const newConversation = useCallback(() => {
     const id = genId();
-    if (activeConvId && messages.length > 0) {
-      saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + activeConvId, messages);
+    if (activeConvId) {
+      const ctx = streamContexts.current.get(activeConvId);
+      const msgsToSave = ctx?.isStreaming ? ctx.messages : messages;
+      if (msgsToSave.length > 0) {
+        saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + activeConvId, msgsToSave);
+      }
     }
     setActiveConvId(id);
     setMessages([]);
@@ -2675,10 +2679,21 @@ export function ChatView({
         const orgUserMsg: ChatMessage = { id: genId(), role: "user", content: text, timestamp: Date.now() };
         const placeholderId = genId();
         const orgOrgName = orgList.find(o => o.id === targetOrgId)?.name || targetOrgId;
-        setMessages((prev) => [...prev, orgUserMsg, {
+        const orgConvId = activeConvId;
+        const orgMsgsSnapshot: ChatMessage[] = [...messages, orgUserMsg, {
           id: placeholderId, role: "assistant" as const,
           content: "", streaming: true, timestamp: Date.now(),
-        }]);
+        }];
+        let orgMsgsLive = orgMsgsSnapshot;
+
+        const updateOrgMessages = (updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
+          orgMsgsLive = updater(orgMsgsLive);
+          if (activeConvIdRef.current === orgConvId) {
+            setMessages(orgMsgsLive);
+          }
+        };
+
+        setMessages(orgMsgsSnapshot);
         setInputText("");
         orgCommandPendingRef.current = true;
         setOrgCommandPending(true);
@@ -2687,7 +2702,7 @@ export function ChatView({
         const pushProgress = (line: string) => {
           progressLines.push(line);
           const preview = progressLines.slice(-8).map(l => `> ${l}`).join("\n");
-          setMessages((prev) => prev.map(m =>
+          updateOrgMessages((prev) => prev.map(m =>
             m.id === placeholderId ? { ...m, content: preview } : m
           ));
         };
@@ -2736,13 +2751,13 @@ export function ChatView({
           const progressSummary = progressLines.length > 0
             ? progressLines.map(l => `> ${l}`).join("\n") + "\n\n---\n\n"
             : "";
-          setMessages((prev) => prev.map(m =>
+          updateOrgMessages((prev) => prev.map(m =>
             m.id === placeholderId
               ? { ...m, content: `${progressSummary}**[${orgOrgName}]** ${resultText}`, streaming: false }
               : m
           ));
         } catch (e: any) {
-          setMessages((prev) => prev.map(m =>
+          updateOrgMessages((prev) => prev.map(m =>
             m.id === placeholderId
               ? { ...m, content: `组织命令失败: ${e.message || e}`, streaming: false, role: "system" as const }
               : m
@@ -2751,6 +2766,9 @@ export function ChatView({
           unsub();
           orgCommandPendingRef.current = false;
           setOrgCommandPending(false);
+          if (orgConvId) {
+            saveMessagesToStorage(STORAGE_KEY_MSGS_PREFIX + orgConvId, orgMsgsLive);
+          }
         }
         return;
       }
