@@ -155,15 +155,12 @@
   ; 3) 兜底：杀掉安装目录下所有残留进程（捕获孤儿 Python 子进程和其他锁文件的进程）
   ;    openakita-server.exe (PyInstaller) 会派生 _internal\python*.exe 等子进程，
   ;    如果父子关系断裂，taskkill /T 无法杀到；按路径通杀可兜底。
-  ;    路径通过环境变量传递，避免空格导致 PowerShell 引号解析出错。
   DetailPrint "Cleaning residual processes in install directory..."
-  System::Call 'kernel32::SetEnvironmentVariable(t "OA_KILL_DIR", t "$INSTDIR")'
-  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith($$env:OA_KILL_DIR, [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith(''$INSTDIR'', [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
   Pop $0
   ; 同样处理 ~/.openakita 下的 venv/python 进程
   ExpandEnvStrings $R0 "%USERPROFILE%\.openakita"
-  System::Call 'kernel32::SetEnvironmentVariable(t "OA_KILL_DIR", t "$R0")'
-  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith($$env:OA_KILL_DIR, [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith(''$R0'', [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
   Pop $0
 
   ; 4) 等待进程完全退出 + Windows 释放文件锁（DLL 卸载需要额外时间）
@@ -199,12 +196,10 @@
   Pop $0
   !insertmacro _OpenAkita_KillAllServicePids
   ; 兜底：杀掉安装目录和数据目录下所有残留进程
-  System::Call 'kernel32::SetEnvironmentVariable(t "OA_KILL_DIR", t "$INSTDIR")'
-  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith($$env:OA_KILL_DIR, [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith(''$INSTDIR'', [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
   Pop $0
   ExpandEnvStrings $R0 "%USERPROFILE%\.openakita"
-  System::Call 'kernel32::SetEnvironmentVariable(t "OA_KILL_DIR", t "$R0")'
-  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith($$env:OA_KILL_DIR, [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Get-Process | Where-Object { $$_.Path -and $$_.Path.StartsWith(''$R0'', [System.StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -EA SilentlyContinue"'
   Pop $0
   Sleep 3000
 !macroend
@@ -252,7 +247,7 @@
 
 !macro _OpenAkita_ForceRemoveDir dir
   System::Call 'kernel32::SetEnvironmentVariable(t "NSIS_DEL_PATH", t "${dir}")'
-  nsExec::ExecToLog 'powershell -NoProfile -Command "Remove-Item -LiteralPath $$env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"'
+  nsExec::ExecToLog 'powershell -NoProfile -Command "Remove-Item -LiteralPath $env:NSIS_DEL_PATH -Recurse -Force -ErrorAction SilentlyContinue"'
   Pop $0
   ${If} $0 != 0
     nsExec::ExecToLog 'cmd /c rd /s /q "${dir}"'
