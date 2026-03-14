@@ -312,15 +312,24 @@ jobs:
           CARGO_HTTP_MULTIPLEXING: "false"
         run: |
           set -euo pipefail
+          cargo fetch --locked
+          CHECK_ARGS=""
+          if [ -n "${{ matrix.rust_target }}" ]; then
+            CHECK_ARGS="--target ${{ matrix.rust_target }}"
+          fi
           MAX_ATTEMPTS=3
           ATTEMPT=1
           while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
             echo "=== Preflight attempt $ATTEMPT/$MAX_ATTEMPTS ==="
-            if cargo fetch --locked && ( [ -n "${{ matrix.rust_target }}" ] && cargo check --target "${{ matrix.rust_target }}" || cargo check ); then
+            if cargo check $CHECK_ARGS; then
               echo "Preflight succeeded"
               exit 0
             fi
             echo "Preflight failed (attempt $ATTEMPT)"
+            if [ $ATTEMPT -eq 1 ]; then
+              echo "::warning::Stale cache detected, running cargo clean before retry"
+              cargo clean
+            fi
             ATTEMPT=$((ATTEMPT + 1))
             [ $ATTEMPT -le $MAX_ATTEMPTS ] && { echo "Retrying in 30s..."; sleep 30; }
           done

@@ -244,10 +244,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo fetch --locked
+          CHECK_ARGS=""
           if [ -n "${{ matrix.rust_target }}" ]; then
-            cargo check --target "${{ matrix.rust_target }}"
-          else
-            cargo check
+            CHECK_ARGS="--target ${{ matrix.rust_target }}"
+          fi
+          if ! cargo check $CHECK_ARGS; then
+            echo "::warning::Preflight cargo check failed — stale cache detected, cleaning and retrying"
+            cargo clean
+            cargo check $CHECK_ARGS
           fi
 
       - name: Clean Rust release intermediates for current target
