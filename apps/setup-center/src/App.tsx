@@ -6713,24 +6713,6 @@ export function App() {
 
             <div className="divider" />
             <details>
-              <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>记忆与 Embedding</summary>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                {FT({ k: "EMBEDDING_MODEL", label: "Embedding 模型", placeholder: "shibing624/text2vec-base-chinese" })}
-                {FT({ k: "EMBEDDING_DEVICE", label: "Embedding 设备", placeholder: "cpu / cuda" })}
-                {FS({ k: "MODEL_DOWNLOAD_SOURCE", label: "模型下载源", options: [
-                  { value: "auto", label: "Auto (自动选择)" },
-                  { value: "hf-mirror", label: "hf-mirror (国内镜像)" },
-                  { value: "modelscope", label: "ModelScope (魔搭)" },
-                  { value: "huggingface", label: "HuggingFace (官方)" },
-                ] })}
-                {FT({ k: "MEMORY_HISTORY_DAYS", label: "历史保留天数", placeholder: "30" })}
-                {FT({ k: "MEMORY_MAX_HISTORY_FILES", label: "最大历史文件数", placeholder: "1000" })}
-                {FT({ k: "MEMORY_MAX_HISTORY_SIZE_MB", label: "最大历史大小（MB）", placeholder: "500" })}
-              </div>
-            </details>
-
-            <div className="divider" />
-            <details>
               <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>会话</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
                 {FT({ k: "SESSION_TIMEOUT_MINUTES", label: "会话超时（分钟）", placeholder: "30" })}

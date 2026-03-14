@@ -151,24 +151,6 @@ export function AgentSystemView(props: AgentSystemViewProps) {
             </div>
 
             <div className="divider" />
-            <div className="label" style={{ fontSize: 13, opacity: 0.7 }}>{t("config.agentMemorySection")}</div>
-            <div className="grid3">
-              {FT({ k: "EMBEDDING_MODEL", label: t("config.agentEmbedModel"), placeholder: "shibing624/text2vec-base-chinese" })}
-              {FT({ k: "EMBEDDING_DEVICE", label: t("config.agentEmbedDevice"), placeholder: "cpu" })}
-              {FS({ k: "MODEL_DOWNLOAD_SOURCE", label: t("config.agentDownloadSource"), options: [
-                { value: "auto", label: "Auto (自动选择)" },
-                { value: "hf-mirror", label: "hf-mirror (国内镜像)" },
-                { value: "modelscope", label: "ModelScope (魔搭)" },
-                { value: "huggingface", label: "HuggingFace (官方)" },
-              ] })}
-            </div>
-            <div className="grid3">
-              {FT({ k: "MEMORY_HISTORY_DAYS", label: t("config.agentMemDays"), placeholder: "30" })}
-              {FT({ k: "MEMORY_MAX_HISTORY_FILES", label: t("config.agentMemFiles"), placeholder: "1000" })}
-              {FT({ k: "MEMORY_MAX_HISTORY_SIZE_MB", label: t("config.agentMemSize"), placeholder: "500" })}
-            </div>
-
-            <div className="divider" />
             <div className="label" style={{ fontSize: 13, opacity: 0.7 }}>{t("config.agentSessionSection")}</div>
             <div className="grid3">
               {FT({ k: "SESSION_TIMEOUT_MINUTES", label: t("config.agentSessionTimeout"), placeholder: "30" })}
