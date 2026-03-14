@@ -101,9 +101,11 @@ _desktop_tool_handler = None
 if sys.platform == "win32":
     try:
         from ..tools.desktop import DESKTOP_TOOLS, DesktopToolHandler
+        from ..tools.desktop.config import get_config as _get_desktop_config
 
-        _DESKTOP_AVAILABLE = True
-        _desktop_tool_handler = DesktopToolHandler()
+        if _get_desktop_config().enabled:
+            _DESKTOP_AVAILABLE = True
+            _desktop_tool_handler = DesktopToolHandler()
     except ImportError:
         pass
 

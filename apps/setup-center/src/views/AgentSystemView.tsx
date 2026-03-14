@@ -69,9 +69,8 @@ export function AgentSystemView(props: AgentSystemViewProps) {
             <Input
               className="mt-2 max-w-[300px]"
               placeholder={t("config.agentCustomId")}
-              value={envGet(envDraft, "PERSONA_CUSTOM_ID", "")}
+              value={envGet(envDraft, "PERSONA_NAME", "custom")}
               onChange={(e) => {
-                setEnvDraft((m) => envSet(m, "PERSONA_CUSTOM_ID", e.target.value));
                 setEnvDraft((m) => envSet(m, "PERSONA_NAME", e.target.value || "custom"));
               }}
             />
@@ -89,9 +88,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
             { value: "never", label: "never (从不思考)" },
           ] })}
         </div>
-        <div style={{ marginTop: 8 }}>
-          {FB({ k: "AUTO_CONFIRM", label: t("config.agentAutoConfirm"), help: t("config.agentAutoConfirmHelp") })}
-        </div>
+        
 
         <div className="divider" />
 
@@ -123,9 +120,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
         {/* Scheduler */}
         <div className="label">{t("config.agentScheduler")}</div>
         <div className="grid3" style={{ marginTop: 4 }}>
-          {FB({ k: "SCHEDULER_ENABLED", label: t("config.agentSchedulerEnable"), help: t("config.agentSchedulerEnableHelp"), defaultValue: true })}
           {FT({ k: "SCHEDULER_TIMEZONE", label: t("config.agentTimezone"), placeholder: "Asia/Shanghai" })}
-          {FT({ k: "SCHEDULER_MAX_CONCURRENT", label: t("config.agentMaxConcurrent"), placeholder: "5", help: t("config.agentMaxConcurrentHelp") })}
         </div>
 
         <div className="divider" />

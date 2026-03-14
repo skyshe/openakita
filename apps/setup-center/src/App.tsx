@@ -2990,15 +2990,14 @@ export function App() {
           "DESKTOP_ENABLED", "DESKTOP_DEFAULT_MONITOR", "DESKTOP_COMPRESSION_QUALITY",
           "DESKTOP_MAX_WIDTH", "DESKTOP_MAX_HEIGHT", "DESKTOP_CACHE_TTL",
           "DESKTOP_UIA_TIMEOUT", "DESKTOP_UIA_RETRY_INTERVAL", "DESKTOP_UIA_MAX_RETRIES",
-          "DESKTOP_VISION_ENABLED", "DESKTOP_VISION_MODEL", "DESKTOP_VISION_FALLBACK_MODEL",
-          "DESKTOP_VISION_OCR_MODEL", "DESKTOP_VISION_MAX_RETRIES", "DESKTOP_VISION_TIMEOUT",
+          "DESKTOP_VISION_ENABLED", "DESKTOP_VISION_MAX_RETRIES", "DESKTOP_VISION_TIMEOUT",
           "DESKTOP_CLICK_DELAY", "DESKTOP_TYPE_INTERVAL", "DESKTOP_MOVE_DURATION",
-          "DESKTOP_FAILSAFE", "DESKTOP_PAUSE", "DESKTOP_LOG_ACTIONS", "DESKTOP_LOG_SCREENSHOTS", "DESKTOP_LOG_DIR",
+          "DESKTOP_FAILSAFE", "DESKTOP_PAUSE",
           "WHISPER_MODEL", "WHISPER_LANGUAGE", "GITHUB_TOKEN",
         ];
       case "agent":
         return [
-          "AGENT_NAME", "MAX_ITERATIONS", "AUTO_CONFIRM", "SELFCHECK_AUTOFIX",
+          "AGENT_NAME", "MAX_ITERATIONS", "SELFCHECK_AUTOFIX",
           "THINKING_MODE",
           "PROGRESS_TIMEOUT_SECONDS", "HARD_TIMEOUT_SECONDS",
           "DATABASE_PATH", "LOG_LEVEL",
@@ -3011,7 +3010,7 @@ export function App() {
           "PROACTIVE_QUIET_HOURS_START", "PROACTIVE_QUIET_HOURS_END", "PROACTIVE_IDLE_THRESHOLD_HOURS",
           "STICKER_ENABLED", "STICKER_DATA_DIR",
           "DESKTOP_NOTIFY_ENABLED", "DESKTOP_NOTIFY_SOUND",
-          "SCHEDULER_ENABLED", "SCHEDULER_TIMEZONE", "SCHEDULER_MAX_CONCURRENT", "SCHEDULER_TASK_TIMEOUT",
+          "SCHEDULER_TIMEZONE", "SCHEDULER_TASK_TIMEOUT",
           "SESSION_TIMEOUT_MINUTES", "SESSION_MAX_HISTORY", "SESSION_STORAGE_PATH",
         ];
       default:
@@ -5116,10 +5115,9 @@ export function App() {
       "DESKTOP_ENABLED", "DESKTOP_DEFAULT_MONITOR", "DESKTOP_COMPRESSION_QUALITY",
       "DESKTOP_MAX_WIDTH", "DESKTOP_MAX_HEIGHT", "DESKTOP_CACHE_TTL",
       "DESKTOP_UIA_TIMEOUT", "DESKTOP_UIA_RETRY_INTERVAL", "DESKTOP_UIA_MAX_RETRIES",
-      "DESKTOP_VISION_ENABLED", "DESKTOP_VISION_MODEL", "DESKTOP_VISION_FALLBACK_MODEL",
-      "DESKTOP_VISION_OCR_MODEL", "DESKTOP_VISION_MAX_RETRIES", "DESKTOP_VISION_TIMEOUT",
+      "DESKTOP_VISION_ENABLED", "DESKTOP_VISION_MAX_RETRIES", "DESKTOP_VISION_TIMEOUT",
       "DESKTOP_CLICK_DELAY", "DESKTOP_TYPE_INTERVAL", "DESKTOP_MOVE_DURATION",
-      "DESKTOP_FAILSAFE", "DESKTOP_PAUSE", "DESKTOP_LOG_ACTIONS", "DESKTOP_LOG_SCREENSHOTS", "DESKTOP_LOG_DIR",
+      "DESKTOP_FAILSAFE", "DESKTOP_PAUSE",
       "WHISPER_MODEL", "WHISPER_LANGUAGE", "GITHUB_TOKEN",
     ];
 
@@ -5135,26 +5133,115 @@ export function App() {
 
           {/* ── MCP (open by default, browser enabled) ── */}
           <details className="group rounded-lg border border-border" open>
-            <summary className="cursor-pointer flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
-              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open:rotate-180 text-muted-foreground" />
-              {t("config.toolsMCP")}
+            <summary className="cursor-pointer flex items-center justify-between px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
+              <span className="flex items-center gap-1.5">
+                <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open:rotate-180 text-muted-foreground" />
+                {t("config.toolsMCP")}
+              </span>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" onClick={(e) => e.stopPropagation()}>
+                <span>{envDraft["MCP_ENABLED"] === "false" ? t("config.toolsSkillsDisabled") : t("config.toolsSkillsEnabled")}</span>
+                <div
+                  onClick={() => setEnvDraft((p) => ({ ...p, MCP_ENABLED: p.MCP_ENABLED === "false" ? "true" : "false" }))}
+                  className="relative shrink-0 transition-colors duration-200 rounded-full"
+                  style={{
+                    width: 40, height: 22,
+                    background: envDraft["MCP_ENABLED"] === "false" ? "var(--line, #d1d5db)" : "var(--ok, #22c55e)",
+                  }}
+                >
+                  <div className="absolute top-0.5 rounded-full bg-white shadow-sm transition-[left] duration-200" style={{
+                    width: 18, height: 18,
+                    left: envDraft["MCP_ENABLED"] === "false" ? 2 : 20,
+                  }} />
+                </div>
+              </label>
             </summary>
             <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-border">
               <div className="grid2">
-                {FB({ k: "MCP_ENABLED", label: t("config.toolsMCPEnable"), help: t("config.toolsMCPEnableHelp") })}
                 {FT({ k: "MCP_TIMEOUT", label: "Timeout (s)", placeholder: "60" })}
               </div>
             </div>
           </details>
 
+          {/* ── Skills ── */}
+          <details className="group/skills rounded-lg border border-border mt-2">
+            <summary className="cursor-pointer flex items-center justify-between px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
+              <span className="flex items-center gap-1.5">
+                <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open/skills:rotate-180 text-muted-foreground" />
+                Skills 技能集成
+              </span>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" onClick={(e) => e.stopPropagation()}>
+                <span>{disabledViews.includes("skills") ? t("config.toolsSkillsDisabled") : t("config.toolsSkillsEnabled")}</span>
+                <div
+                  onClick={() => toggleViewDisabled("skills")}
+                  className="relative shrink-0 transition-colors duration-200 rounded-full"
+                  style={{
+                    width: 40, height: 22,
+                    background: disabledViews.includes("skills") ? "var(--line, #d1d5db)" : "var(--ok, #22c55e)",
+                  }}
+                >
+                  <div className="absolute top-0.5 rounded-full bg-white shadow-sm transition-[left] duration-200" style={{
+                    width: 18, height: 18,
+                    left: disabledViews.includes("skills") ? 2 : 20,
+                  }} />
+                </div>
+              </label>
+            </summary>
+            <div className="flex items-center gap-2 px-4 py-3 border-t border-border">
+              <button
+                className="px-3 py-1.5 text-xs font-medium rounded-md border border-border hover:bg-accent/50 transition-colors"
+                onClick={() => {
+                  if (!skillsDetail) return;
+                  const m: Record<string, boolean> = {};
+                  for (const s of skillsDetail) { if (s?.skill_id) m[s.skill_id] = true; }
+                  setSkillsSelection(m);
+                  setSkillsTouched(true);
+                }}
+              >
+                启用全部
+              </button>
+              <button
+                className="px-3 py-1.5 text-xs font-medium rounded-md border border-border hover:bg-accent/50 transition-colors"
+                onClick={() => {
+                  if (!skillsDetail) return;
+                  const m: Record<string, boolean> = {};
+                  for (const s of skillsDetail) { if (s?.skill_id) m[s.skill_id] = false; }
+                  setSkillsSelection(m);
+                  setSkillsTouched(true);
+                }}
+              >
+                禁用全部
+              </button>
+              <span className="text-xs text-muted-foreground ml-auto">
+                {skillsDetail ? `${Object.values(skillsSelection).filter(Boolean).length} / ${skillsDetail.length} 已启用` : ""}
+              </span>
+            </div>
+          </details>
+
           {/* ── Desktop Automation (open by default, enabled) ── */}
           <details className="group/desktop rounded-lg border border-border mt-2" open>
-            <summary className="cursor-pointer flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
-              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open/desktop:rotate-180 text-muted-foreground" />
-              {t("config.toolsDesktop")}
+            <summary className="cursor-pointer flex items-center justify-between px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
+              <span className="flex items-center gap-1.5">
+                <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open/desktop:rotate-180 text-muted-foreground" />
+                {t("config.toolsDesktop")}
+              </span>
+              <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none" onClick={(e) => e.stopPropagation()}>
+                <span>{envDraft["DESKTOP_ENABLED"] === "false" ? t("config.toolsSkillsDisabled") : t("config.toolsSkillsEnabled")}</span>
+                <div
+                  onClick={() => setEnvDraft((p) => ({ ...p, DESKTOP_ENABLED: p.DESKTOP_ENABLED === "false" ? "true" : "false" }))}
+                  className="relative shrink-0 transition-colors duration-200 rounded-full"
+                  style={{
+                    width: 40, height: 22,
+                    background: envDraft["DESKTOP_ENABLED"] === "false" ? "var(--line, #d1d5db)" : "var(--ok, #22c55e)",
+                  }}
+                >
+                  <div className="absolute top-0.5 rounded-full bg-white shadow-sm transition-[left] duration-200" style={{
+                    width: 18, height: 18,
+                    left: envDraft["DESKTOP_ENABLED"] === "false" ? 2 : 20,
+                  }} />
+                </div>
+              </label>
             </summary>
             <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-border">
-              {FB({ k: "DESKTOP_ENABLED", label: t("config.toolsDesktopEnable"), help: t("config.toolsDesktopHelp") })}
               <div className="grid3">
                 {FT({ k: "DESKTOP_DEFAULT_MONITOR", label: t("config.toolsMonitor"), placeholder: "0" })}
                 {FT({ k: "DESKTOP_MAX_WIDTH", label: t("config.toolsMaxW"), placeholder: "1920" })}
@@ -5172,10 +5259,6 @@ export function App() {
                     {FB({ k: "DESKTOP_FAILSAFE", label: "Failsafe" })}
                   </div>
                   {FB({ k: "DESKTOP_VISION_ENABLED", label: t("config.toolsVision"), help: t("config.toolsVisionHelp") })}
-                  <div className="grid2">
-                    {FT({ k: "DESKTOP_VISION_MODEL", label: t("config.toolsVisionModel"), placeholder: "qwen3-vl-plus" })}
-                    {FT({ k: "DESKTOP_VISION_OCR_MODEL", label: "OCR", placeholder: "qwen-vl-ocr" })}
-                  </div>
                   <div className="grid3">
                     {FT({ k: "DESKTOP_CLICK_DELAY", label: "Click Delay", placeholder: "0.1" })}
                     {FT({ k: "DESKTOP_TYPE_INTERVAL", label: "Type Interval", placeholder: "0.03" })}
@@ -5186,38 +5269,7 @@ export function App() {
             </div>
           </details>
 
-          {/* ── Model Downloads & Voice Recognition (prominent, open by default) ── */}
-          <details className="group/dl rounded-lg border border-border mt-2" open>
-            <summary className="cursor-pointer flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium select-none list-none [&::-webkit-details-marker]:hidden hover:bg-accent/50 transition-colors">
-              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-open/dl:rotate-180 text-muted-foreground" />
-              {t("config.toolsDownloadVoice")}
-            </summary>
-            <div className="flex flex-col gap-2.5 px-4 py-3 border-t border-border">
-              <div className="grid2">
-                {FS({ k: "MODEL_DOWNLOAD_SOURCE", label: t("config.agentDownloadSource"), options: [
-                  { value: "auto", label: "Auto (自动选择最快源)" },
-                  { value: "hf-mirror", label: "hf-mirror (国内镜像 🇨🇳)" },
-                  { value: "modelscope", label: "ModelScope (魔搭社区 🇨🇳)" },
-                  { value: "huggingface", label: "HuggingFace (官方)" },
-                ] })}
-                {FS({ k: "WHISPER_LANGUAGE", label: t("config.toolsWhisperLang"), options: [
-                  { value: "zh", label: "中文 (zh)" },
-                  { value: "en", label: "English (en, .en model)" },
-                  { value: "auto", label: "Auto (自动检测)" },
-                ] })}
-              </div>
-              <div className="grid2">
-                {FC({ k: "WHISPER_MODEL", label: t("config.toolsWhisperModel"), help: t("config.toolsWhisperHelp"), options: [
-                  { value: "tiny", label: "tiny (~39MB)" },
-                  { value: "base", label: "base (~74MB)" },
-                  { value: "small", label: "small (~244MB)" },
-                  { value: "medium", label: "medium (~769MB)" },
-                  { value: "large", label: "large (~1.5GB)" },
-                ], placeholder: "base" })}
-                {FT({ k: "GITHUB_TOKEN", label: "GitHub Token", placeholder: "", type: "password", help: t("config.toolsGithubHelp") })}
-              </div>
-            </div>
-          </details>
+          {/* ── Model Downloads & Voice Recognition — hidden (not actively used) ── */}
 
           {/* ── Network & Proxy ── */}
           <details className="group/net rounded-lg border border-border mt-2">
@@ -5251,26 +5303,7 @@ export function App() {
             </div>
           </details>
 
-          {/* ── Skills toggle ── */}
-          <div className="flex items-center justify-between rounded-lg border border-border mt-3 px-4 py-2.5">
-            <span className="text-sm font-medium">{t("config.toolsSkills")} {skillSummary ? `(${skillSummary.count})` : ""}</span>
-            <label className="inline-flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-              <span>{disabledViews.includes("skills") ? t("config.toolsSkillsDisabled") : t("config.toolsSkillsEnabled")}</span>
-              <div
-                onClick={() => toggleViewDisabled("skills")}
-                className="relative shrink-0 transition-colors duration-200 rounded-full"
-                style={{
-                  width: 40, height: 22,
-                  background: disabledViews.includes("skills") ? "var(--line, #d1d5db)" : "var(--ok, #22c55e)",
-                }}
-              >
-                <div className="absolute top-0.5 rounded-full bg-white shadow-sm transition-[left] duration-200" style={{
-                  width: 18, height: 18,
-                  left: disabledViews.includes("skills") ? 2 : 20,
-                }} />
-              </div>
-            </label>
-          </div>
+          {/* ── Skills toggle (moved below, no longer here) ── */}
 
         </div>
 
@@ -6007,7 +6040,6 @@ export function App() {
       // agent (基础)
       "AGENT_NAME",
       "MAX_ITERATIONS",
-      "AUTO_CONFIRM",
       "THINKING_MODE",
       "TOOL_MAX_PARALLEL",
       "FORCE_TOOL_CALL_MAX_RETRIES",
@@ -6050,9 +6082,7 @@ export function App() {
       "STICKER_ENABLED",
       "STICKER_DATA_DIR",
       // scheduler
-      "SCHEDULER_ENABLED",
       "SCHEDULER_TIMEZONE",
-      "SCHEDULER_MAX_CONCURRENT",
       "SCHEDULER_TASK_TIMEOUT",
       // session
       "SESSION_TIMEOUT_MINUTES",
@@ -6109,9 +6139,6 @@ export function App() {
       "DESKTOP_UIA_RETRY_INTERVAL",
       "DESKTOP_UIA_MAX_RETRIES",
       "DESKTOP_VISION_ENABLED",
-      "DESKTOP_VISION_MODEL",
-      "DESKTOP_VISION_FALLBACK_MODEL",
-      "DESKTOP_VISION_OCR_MODEL",
       "DESKTOP_VISION_MAX_RETRIES",
       "DESKTOP_VISION_TIMEOUT",
       "DESKTOP_CLICK_DELAY",
@@ -6119,9 +6146,6 @@ export function App() {
       "DESKTOP_MOVE_DURATION",
       "DESKTOP_FAILSAFE",
       "DESKTOP_PAUSE",
-      "DESKTOP_LOG_ACTIONS",
-      "DESKTOP_LOG_SCREENSHOTS",
-      "DESKTOP_LOG_DIR",
       // browser-use / openai compatibility (used by browser_mcp)
       "OPENAI_API_BASE",
       "OPENAI_BASE_URL",
@@ -6378,20 +6402,54 @@ export function App() {
             </div>
             <div className="grid2">
               <div className="card" style={{ marginTop: 0 }}>
-                <div className="label" style={{ marginBottom: 8 }}>
-                  MCP
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div className="label" style={{ marginBottom: 0 }}>MCP</div>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--fg2)", cursor: "pointer", userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
+                    <span>{envDraft["MCP_ENABLED"] === "false" ? "已禁用" : "已启用"}</span>
+                    <div
+                      onClick={() => setEnvDraft((p) => ({ ...p, MCP_ENABLED: p.MCP_ENABLED === "false" ? "true" : "false" }))}
+                      style={{
+                        position: "relative", width: 40, height: 22, borderRadius: 11,
+                        background: envDraft["MCP_ENABLED"] === "false" ? "var(--line, #d1d5db)" : "var(--ok, #22c55e)",
+                        transition: "background 0.2s", flexShrink: 0,
+                      }}
+                    >
+                      <div style={{
+                        position: "absolute", top: 2, width: 18, height: 18, borderRadius: 9,
+                        background: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,.15)",
+                        left: envDraft["MCP_ENABLED"] === "false" ? 2 : 20,
+                        transition: "left 0.2s",
+                      }} />
+                    </div>
+                  </label>
                 </div>
                 <div className="grid2">
-                  {FB({ k: "MCP_ENABLED", label: "启用 MCP", help: "连接外部 MCP 服务/工具" })}
                   {FT({ k: "MCP_TIMEOUT", label: "MCP_TIMEOUT", placeholder: "60" })}
                 </div>
               </div>
 
               <div className="card" style={{ marginTop: 0 }}>
-                <div className="label" style={{ marginBottom: 8 }}>
-                  桌面自动化（Windows）
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div className="label" style={{ marginBottom: 0 }}>桌面自动化（Windows）</div>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--fg2)", cursor: "pointer", userSelect: "none" }} onClick={(e) => e.stopPropagation()}>
+                    <span>{envDraft["DESKTOP_ENABLED"] === "false" ? "已禁用" : "已启用"}</span>
+                    <div
+                      onClick={() => setEnvDraft((p) => ({ ...p, DESKTOP_ENABLED: p.DESKTOP_ENABLED === "false" ? "true" : "false" }))}
+                      style={{
+                        position: "relative", width: 40, height: 22, borderRadius: 11,
+                        background: envDraft["DESKTOP_ENABLED"] === "false" ? "var(--line, #d1d5db)" : "var(--ok, #22c55e)",
+                        transition: "background 0.2s", flexShrink: 0,
+                      }}
+                    >
+                      <div style={{
+                        position: "absolute", top: 2, width: 18, height: 18, borderRadius: 9,
+                        background: "#fff", boxShadow: "0 1px 2px rgba(0,0,0,.15)",
+                        left: envDraft["DESKTOP_ENABLED"] === "false" ? 2 : 20,
+                        transition: "left 0.2s",
+                      }} />
+                    </div>
+                  </label>
                 </div>
-                {FB({ k: "DESKTOP_ENABLED", label: "启用桌面工具", help: "启用/禁用桌面自动化工具集" })}
                 <div className="divider" />
                 <div className="grid3">
                   {FT({ k: "DESKTOP_DEFAULT_MONITOR", label: "默认显示器", placeholder: "0" })}
@@ -6405,10 +6463,6 @@ export function App() {
                 </div>
                 <div className="divider" />
                 {FB({ k: "DESKTOP_VISION_ENABLED", label: "启用视觉", help: "用于屏幕理解/定位" })}
-                <div className="grid2" style={{ marginTop: 10 }}>
-                  {FT({ k: "DESKTOP_VISION_MODEL", label: "视觉模型", placeholder: "qwen3-vl-plus" })}
-                  {FT({ k: "DESKTOP_VISION_OCR_MODEL", label: "OCR 模型", placeholder: "qwen-vl-ocr" })}
-                </div>
                 <div className="grid3" style={{ marginTop: 10 }}>
                   {FT({ k: "DESKTOP_CLICK_DELAY", label: "click_delay", placeholder: "0.1" })}
                   {FT({ k: "DESKTOP_TYPE_INTERVAL", label: "type_interval", placeholder: "0.03" })}
@@ -6450,7 +6504,6 @@ export function App() {
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
                 {FT({ k: "AGENT_NAME", label: "Agent 名称", placeholder: "OpenAkita" })}
                 {FT({ k: "MAX_ITERATIONS", label: "最大迭代次数", placeholder: "300" })}
-                {FB({ k: "AUTO_CONFIRM", label: "自动确认（慎用）", help: "打开后会减少交互确认，建议只在可信环境中使用" })}
                 {FS({ k: "THINKING_MODE", label: "Thinking 模式", options: [
                   { value: "auto", label: "auto (自动判断)" },
                   { value: "always", label: "always (始终思考)" },
@@ -6511,19 +6564,9 @@ export function App() {
 
             <div className="divider" />
             <details open>
-              <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>调度器（默认启用）</summary>
+              <summary style={{ cursor: "pointer", fontWeight: 800, padding: "8px 0" }}>调度器</summary>
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 10 }}>
-                <label className="pill" style={{ cursor: "pointer", userSelect: "none", alignSelf: "flex-start" }}>
-                  <input
-                    style={{ width: 16, height: 16 }}
-                    type="checkbox"
-                    checked={envGet(envDraft, "SCHEDULER_ENABLED", "true").toLowerCase() === "true"}
-                    onChange={(e) => setEnvDraft((m) => envSet(m, "SCHEDULER_ENABLED", String(e.target.checked)))}
-                  />
-                  启用定时任务调度器（推荐）
-                </label>
                 {FT({ k: "SCHEDULER_TIMEZONE", label: "时区", placeholder: "Asia/Shanghai" })}
-                {FT({ k: "SCHEDULER_MAX_CONCURRENT", label: "最大并发任务数", placeholder: "5" })}
                 {FT({ k: "SCHEDULER_TASK_TIMEOUT", label: "任务超时（秒）", placeholder: "600" })}
               </div>
             </details>
