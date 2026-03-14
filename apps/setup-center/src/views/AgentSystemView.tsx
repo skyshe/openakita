@@ -8,11 +8,11 @@ import { envGet, envSet } from "../utils";
 type AgentSystemViewProps = {
   envDraft: EnvMap;
   setEnvDraft: (updater: (prev: EnvMap) => EnvMap) => void;
-  busy: string | null;
+  busy?: string | null;
 };
 
 export function AgentSystemView(props: AgentSystemViewProps) {
-  const { envDraft, setEnvDraft, busy } = props;
+  const { envDraft, setEnvDraft, busy = null } = props;
   const { t } = useTranslation();
 
   const _envBase = { envDraft, onEnvChange: setEnvDraft, busy };
