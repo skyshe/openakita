@@ -6181,6 +6181,7 @@ export function App() {
                       const result = await invoke<string>("factory_reset");
                       dismissLoading(_b);
                       notifySuccess(result);
+                      try { localStorage.clear(); } catch {}
                       setTimeout(() => { setView("onboarding"); window.location.reload(); }, 1500);
                     } catch (e) {
                       dismissLoading(_b);

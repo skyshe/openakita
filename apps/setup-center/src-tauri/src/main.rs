@@ -1114,7 +1114,7 @@ fn factory_reset() -> Result<String, String> {
 
     // 2. Determine root and build list of paths to remove
     let root = openakita_root_dir();
-    let dirs_to_remove = ["workspaces", "venv", "runtime", "run", "logs", "modules", "bin"];
+    let dirs_to_remove = ["workspaces", "venv", "runtime", "run", "logs", "modules", "bin", "data"];
     let files_to_remove = ["state.json", "cli.json"];
 
     let mut removed = Vec::new();
