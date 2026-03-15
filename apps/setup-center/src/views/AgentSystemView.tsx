@@ -127,7 +127,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
         <p className="text-sm text-muted-foreground mt-1 mb-3 italic">{t("config.soulSubtitle")}</p>
 
         {/* ── 角色选择 ── */}
-        <Section title={t("config.agentPersona")}>
+        <Section title={t("config.agentPersona")} subtitle={t("config.agentPersonaSub")}>
           <ToggleGroup
             type="single"
             variant="outline"
@@ -161,7 +161,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
         </Section>
 
         {/* ── 核心参数 ── */}
-        <Section title={t("config.agentCore")} className="mt-2">
+        <Section title={t("config.agentCore")} subtitle={t("config.agentCoreSub")} className="mt-2">
           <div className="grid3">
             {FT({ k: "AGENT_NAME", label: t("config.agentName"), placeholder: "OpenAkita" })}
             {FT({ k: "MAX_ITERATIONS", label: t("config.agentMaxIter"), placeholder: "300", help: t("config.agentMaxIterHelp") })}
@@ -176,6 +176,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
         {/* ── 记忆管理 ── */}
         <Section
           title={t("sidebar.memory")}
+          subtitle={t("config.memorySub")}
           className="mt-2"
           toggle={
             <TogglePill
@@ -223,6 +224,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
         {/* ── 活人感模式 ── */}
         <Section
           title={t("config.agentProactive")}
+          subtitle={t("config.agentProactiveSub")}
           toggle={
             <TogglePill
               enabled={proactiveEnabled}
@@ -251,6 +253,7 @@ export function AgentSystemView(props: AgentSystemViewProps) {
         {/* ── 计划任务 ── */}
         <Section
           title={t("config.agentScheduler")}
+          subtitle={t("config.agentSchedulerSub")}
           className="mt-2"
           toggle={
             <TogglePill

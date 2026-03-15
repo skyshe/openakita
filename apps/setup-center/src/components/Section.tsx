@@ -1,7 +1,8 @@
 import { ChevronDown } from "lucide-react";
 
-export function Section({ title, children, toggle, className }: {
+export function Section({ title, subtitle, children, toggle, className }: {
   title: string;
+  subtitle?: string;
   children?: React.ReactNode;
   toggle?: React.ReactNode;
   className?: string;
@@ -15,7 +16,10 @@ export function Section({ title, children, toggle, className }: {
           ) : (
             <span className="size-4 shrink-0" />
           )}
-          {title}
+          <span className="flex flex-col">
+            <span>{title}</span>
+            {subtitle && <span className="text-xs font-normal text-muted-foreground">{subtitle}</span>}
+          </span>
         </span>
         {toggle}
       </summary>
