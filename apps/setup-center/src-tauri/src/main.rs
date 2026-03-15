@@ -907,6 +907,63 @@ fn cleanup_old_environment(clean_venv: bool, clean_runtime: bool) -> Result<Stri
     }
 }
 
+/// Reset the entire OpenAkita installation to factory state.
+/// Stops all processes, then removes workspaces, runtime, venv, logs, etc.
+/// Preserves only `root_config.json` (custom root dir setting).
+#[tauri::command]
+fn factory_reset() -> Result<String, String> {
+    // 1. Stop all running backend processes
+    let stopped = openakita_stop_all_processes();
+
+    // 2. Determine root and build list of paths to remove
+    let root = openakita_root_dir();
+    let dirs_to_remove = ["workspaces", "venv", "runtime", "run", "logs", "modules", "bin"];
+    let files_to_remove = ["state.json", "cli.json"];
+
+    let mut removed = Vec::new();
+    let mut errors = Vec::new();
+
+    for name in &dirs_to_remove {
+        let p = root.join(name);
+        if p.exists() {
+            match force_remove_dir(&p) {
+                Ok(()) => removed.push(name.to_string()),
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+    }
+
+    for name in &files_to_remove {
+        let p = root.join(name);
+        if p.exists() {
+            match fs::remove_file(&p) {
+                Ok(()) => removed.push(name.to_string()),
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(format!(
+            "部分重置失败: {}{}",
+            errors.join("; "),
+            if !removed.is_empty() { format!(" (已清理: {})", removed.join(", ")) } else { String::new() }
+        ));
+    }
+
+    let mut msg = if removed.is_empty() {
+        "无需清理（已是初始状态）".to_string()
+    } else {
+        format!("已清理: {}", removed.join(", "))
+    };
+
+    if !stopped.is_empty() {
+        msg.push_str(&format!(" (已停止 {} 个进程)", stopped.len()));
+    }
+
+    Ok(msg)
+}
+
 fn state_file_path() -> PathBuf {
     openakita_root_dir().join("state.json")
 }
@@ -2388,6 +2445,7 @@ fn main() {
             check_environment,
             check_backend_availability,
             cleanup_old_environment,
+            factory_reset,
             start_onboarding_log,
             append_onboarding_log,
             append_onboarding_log_lines,

@@ -1320,7 +1320,20 @@
     "opsLogExportDesc": "打包导出日志、LLM 调试数据和系统信息，用于问题排查",
     "exportDiagBtn": "导出诊断信息",
     "opsLogExporting": "正在打包...",
-    "opsLogExportSuccess": "诊断包已导出至：{{path}}"
+    "opsLogExportSuccess": "诊断包已导出至：{{path}}",
+    "factoryResetTitle": "重置系统",
+    "factoryResetSubtitle": "清除所有配置和数据，恢复到全新安装状态",
+    "factoryResetDesc": "此操作将停止所有后端进程，然后删除全部工作区、运行时环境、日志和配置文件。重置后将自动进入初始设置向导。此操作不可撤销。",
+    "factoryResetBtn": "重置系统",
+    "factoryResetConfirmTitle": "确认重置系统",
+    "factoryResetConfirmDesc": "此操作将永久删除以下所有数据，且无法恢复：",
+    "factoryResetItem1": "所有工作区数据（对话记忆、会话、身份配置、.env）",
+    "factoryResetItem2": "Python 运行时环境和已安装的模块",
+    "factoryResetItem3": "所有日志文件",
+    "factoryResetItem4": "CLI 配置和进程锁文件",
+    "factoryResetTypeHint": "请输入 RESET 确认此操作：",
+    "factoryResetConfirmBtn": "确认重置",
+    "factoryResetInProgress": "正在重置系统..."
   },
   "poster": {
     "title": "海报生成",

@@ -43,6 +43,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import logoUrl from "./assets/logo.png";
 import "highlight.js/styles/github.css";
@@ -473,6 +474,8 @@ export function App() {
   // backup state
   const [backupHistory, setBackupHistory] = useState<Array<{ filename: string; path: string; size_bytes: number; created_at: string; manifest?: any }>>([]);
   const [backupShowHistory, setBackupShowHistory] = useState(false);
+  const [factoryResetOpen, setFactoryResetOpen] = useState(false);
+  const [factoryResetConfirmText, setFactoryResetConfirmText] = useState("");
 
   // providers & models
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -5937,6 +5940,69 @@ export function App() {
               </div>
             </Section>
           )}
+
+          {IS_TAURI && (
+            <Section title={t("adv.factoryResetTitle")} subtitle={t("adv.factoryResetSubtitle")} className="mt-2">
+              <p className="text-xs text-muted-foreground mb-2">{t("adv.factoryResetDesc")}</p>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => { setFactoryResetConfirmText(""); setFactoryResetOpen(true); }}
+                disabled={!!busy}
+              >
+                {t("adv.factoryResetBtn")}
+              </Button>
+            </Section>
+          )}
+
+          <AlertDialog open={factoryResetOpen} onOpenChange={(open) => { if (!open) setFactoryResetOpen(false); }}>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>{t("adv.factoryResetConfirmTitle")}</AlertDialogTitle>
+                <AlertDialogDescription className="space-y-2" asChild>
+                  <div>
+                    <p>{t("adv.factoryResetConfirmDesc")}</p>
+                    <ul className="list-disc pl-5 text-sm space-y-0.5">
+                      <li>{t("adv.factoryResetItem1")}</li>
+                      <li>{t("adv.factoryResetItem2")}</li>
+                      <li>{t("adv.factoryResetItem3")}</li>
+                      <li>{t("adv.factoryResetItem4")}</li>
+                    </ul>
+                    <p className="font-medium mt-2">{t("adv.factoryResetTypeHint")}</p>
+                    <Input
+                      value={factoryResetConfirmText}
+                      onChange={(e) => setFactoryResetConfirmText(e.target.value)}
+                      placeholder="RESET"
+                      className="mt-1"
+                      autoFocus
+                    />
+                  </div>
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+                <AlertDialogAction
+                  variant="destructive"
+                  disabled={factoryResetConfirmText !== "RESET"}
+                  onClick={async () => {
+                    setFactoryResetOpen(false);
+                    const _b = notifyLoading(t("adv.factoryResetInProgress"));
+                    try {
+                      const result = await invoke<string>("factory_reset");
+                      dismissLoading(_b);
+                      notifySuccess(result);
+                      setTimeout(() => { setView("onboarding"); window.location.reload(); }, 1500);
+                    } catch (e) {
+                      dismissLoading(_b);
+                      notifyError(String(e));
+                    }
+                  }}
+                >
+                  {t("adv.factoryResetConfirmBtn")}
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </>
     );

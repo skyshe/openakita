@@ -1320,7 +1320,20 @@
     "opsLogExportDesc": "Bundle and export logs, LLM debug data, and system info for troubleshooting",
     "exportDiagBtn": "Export Diagnostics",
     "opsLogExporting": "Bundling...",
-    "opsLogExportSuccess": "Diagnostic bundle exported to: {{path}}"
+    "opsLogExportSuccess": "Diagnostic bundle exported to: {{path}}",
+    "factoryResetTitle": "Factory Reset",
+    "factoryResetSubtitle": "Erase all config and data, restore to fresh install state",
+    "factoryResetDesc": "This will stop all backend processes, then delete all workspaces, runtime environment, logs, and configuration files. After reset, the initial setup wizard will launch. This action is irreversible.",
+    "factoryResetBtn": "Factory Reset",
+    "factoryResetConfirmTitle": "Confirm Factory Reset",
+    "factoryResetConfirmDesc": "This will permanently delete the following data with no recovery:",
+    "factoryResetItem1": "All workspace data (conversations, memory, identity, .env)",
+    "factoryResetItem2": "Python runtime and installed modules",
+    "factoryResetItem3": "All log files",
+    "factoryResetItem4": "CLI config and process lock files",
+    "factoryResetTypeHint": "Type RESET to confirm:",
+    "factoryResetConfirmBtn": "Confirm Reset",
+    "factoryResetInProgress": "Resetting system..."
   },
   "poster": {
     "title": "Poster Generator",
