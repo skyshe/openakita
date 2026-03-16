@@ -1998,12 +1998,16 @@ export function ChatView({
   }, [flushCurrentConversationToStorage]);
 
   // ── APP 后台恢复：中断已断开的 SSE 流 ──
+  // Tauri WebView (macOS WKWebView / Windows WebView2) kills HTTP streams
+  // when the window is in the background, so we need to proactively abort and
+  // let the error handler clean up.  Regular browsers keep fetch streams alive
+  // across tab switches / minimize, so aborting would unnecessarily terminate
+  // a perfectly healthy response — skip for IS_WEB.
   useEffect(() => {
+    if (IS_WEB) return;
     const handler = () => {
       for (const [convId, ctx] of streamContexts.current) {
         if (!ctx.isStreaming) continue;
-        // Check if the reader is likely dead (WebView disconnects streams in background)
-        // Abort the stream and let the error handler show the disconnection message
         ctx.abort.abort();
         logger.warn("Chat", "SSE stream aborted after app resume", { convId });
       }
