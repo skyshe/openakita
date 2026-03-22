@@ -641,6 +641,11 @@ async def get_topology(request: Request):
                         if sub_status == "starting":
                             sub_status = "running"
 
+                        _VALID_SUB_STATUSES = {
+                            "running", "completed", "error", "idle",
+                            "cancelled", "timeout", "interrupted",
+                        }
+
                         from_agent = sub.get("from_agent", "")
                         parent_node_id = sid
                         if from_agent and f"{sid}::{from_agent}" in seen_ids:
@@ -652,7 +657,7 @@ async def get_topology(request: Request):
                             "name": sub.get("name", pinfo["name"]),
                             "icon": sub.get("icon", pinfo["icon"]),
                             "color": pinfo["color"],
-                            "status": sub_status if sub_status in ("running", "completed", "error", "idle") else "running",
+                            "status": sub_status if sub_status in _VALID_SUB_STATUSES else "running",
                             "is_sub_agent": True,
                             "parent_id": parent_node_id,
                             "iteration": sub.get("iteration", 0),
