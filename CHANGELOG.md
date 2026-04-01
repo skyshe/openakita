@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.8] - 2026-02-05
+
+### Added
+- **多端对话实时同步功能**
+  - 支持多端对话窗口实时同步消息
+  - 对话任务在后台持续执行，不受窗口状态影响
+  - 前端页面切换、窗口放小、切换后台等失焦操作不会导致对话停止
+  - 对话进度实时显示在对话界面
+
+### Fixed
+- **UnboundLocalError 修复** - 修复了多端同步功能实现中的变量未定义错误
+
 ## [1.2.1] - 2026-02-05
 
 ### Added
