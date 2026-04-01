@@ -329,6 +329,10 @@ async def _stream_chat(
     _agent_done = asyncio.Event()
     _agent_queue: asyncio.Queue = asyncio.Queue()
     _save_done = False
+    
+    # 提前定义 session 变量，避免 finally 块中出现 UnboundLocalError
+    session = None
+    session_messages_history: list[dict] = []
 
     try:
         actual_agent = _resolve_agent(agent)
@@ -350,8 +354,6 @@ async def _stream_chat(
         # --- Session management ---
         import uuid as _uuid
         conversation_id = chat_request.conversation_id or f"api_{_uuid.uuid4().hex[:12]}"
-        session = None
-        session_messages_history: list[dict] = []
 
         if session_manager and conversation_id:
             try:
