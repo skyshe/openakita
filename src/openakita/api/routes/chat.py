@@ -35,6 +35,21 @@ async def _broadcast_chat_event(event: str, data: dict) -> None:
         pass
 
 
+def _create_broadcast_handler(conversation_id: str, client_id: str = ""):
+    """Create a broadcast handler for chat events in a specific conversation."""
+    
+    async def handler(event_type: str, event_data: dict):
+        """Handler for broadcasting chat events."""
+        data = {
+            "conversation_id": conversation_id,
+            "client_id": client_id,
+            **event_data
+        }
+        await _broadcast_chat_event(event_type, data)
+    
+    return handler
+
+
 def _resolve_agent(agent: object):
     """Resolve the actual Agent instance."""
     from openakita.core.agent import Agent
@@ -145,10 +160,12 @@ def _schedule_background_save(
     full_reply_snapshot: str,
     collected_artifacts: list,
     save_done: bool,
+    client_id: str = "",
 ) -> None:
     """Register a background callback so that when a long-running agent task
     finally completes after the SSE stream has closed, the result is still
-    saved to the session.  The user will see it when they refresh the page."""
+    saved to the session.  The user will see it when they refresh the page.
+    同时通过 WebSocket 广播任务完成事件，让所有连接的客户端都能看到结果。"""
 
     async def _bg_drain_and_save():
         try:
@@ -181,6 +198,15 @@ def _schedule_background_save(
                     "[Chat API] Background save: %d chars (conv=%s)",
                     len(bg_reply), conversation_id,
                 )
+                
+                # 广播任务完成事件
+                await _broadcast_chat_event("chat:task_complete", {
+                    "conversation_id": conversation_id,
+                    "client_id": client_id,
+                    "message_preview": bg_reply[:100],
+                    "has_artifacts": bool(bg_artifacts),
+                    "timestamp": time.time(),
+                })
             except Exception as e:
                 logger.warning("[Chat API] Background save failed: %s", e)
 
@@ -213,6 +239,7 @@ async def _stream_chat(
     - artifact 事件注入（deliver_artifacts）
     - ask_user 文本捕获
     - Session 回复保存
+    - 实时事件广播给所有连接的客户端
     """
 
     _reply_chars = 0
@@ -225,6 +252,36 @@ async def _stream_chat(
     _ask_user_options: list[dict] = []
     _ask_user_questions: list[dict] = []
     _collected_artifacts: list[dict] = []
+    
+    # 创建事件广播处理器
+    conversation_id = chat_request.conversation_id or ""
+    client_id = getattr(chat_request, "client_id", "") or ""
+    broadcast_handler = _create_broadcast_handler(conversation_id, client_id)
+    
+    # 对话状态管理
+    conversation_status = "starting"  # starting, thinking, tool_executing, text_generating, completed, error
+    current_step = 0
+    total_steps = 0
+    current_tool = ""
+
+    async def _update_status(new_status: str, extra_data: dict | None = None):
+        """更新对话状态并广播状态变更事件"""
+        nonlocal conversation_status
+        conversation_status = new_status
+        
+        status_data = {
+            "status": new_status,
+            "current_step": current_step,
+            "total_steps": total_steps,
+            "current_tool": current_tool,
+        }
+        if extra_data:
+            status_data.update(extra_data)
+        
+        try:
+            await broadcast_handler("chat:status", status_data)
+        except Exception as e:
+            logger.warning(f"[Chat API] 广播状态事件失败: {e}")
 
     async def _check_disconnected() -> bool:
         nonlocal _client_disconnected
@@ -343,10 +400,11 @@ async def _stream_chat(
         _agent_task = asyncio.create_task(_agent_runner())
 
         # --- 后台断连检测：宽限期机制 ---
-        # 长任务（如 multi-agent 委派）可能运行 10-20 分钟。客户端断连后不立即
-        # 取消任务，而是给予较长的宽限期（DISCONNECT_GRACE_SECONDS）。任务完成后
+        # 长任务（如 multi-agent 委派）可能运行很长时间。客户端断连后不立即
+        # 取消任务，而是给予无限期的宽限期。任务完成后
         # 通过 _schedule_background_save 保存结果到 session，用户刷新即可看到。
-        DISCONNECT_GRACE_SECONDS = 900  # 15 分钟
+        # 设置为一个很大的值（10小时），确保任务有足够时间完成
+        DISCONNECT_GRACE_SECONDS = 36000  # 10 小时
 
         async def _disconnect_watcher():
             nonlocal _client_disconnected
@@ -386,6 +444,9 @@ async def _stream_chat(
 
         _disconnect_watcher_task = asyncio.create_task(_disconnect_watcher())
 
+        # 对话开始，广播初始状态
+        asyncio.create_task(_update_status("starting"))
+        
         # --- 主 SSE 事件循环：从 queue 读取事件并转发 ---
         # 每 SSE_KEEPALIVE_INTERVAL 秒无真实事件时发送 keepalive，
         # 防止前端 fetch 连接因长时间无数据而超时断开（LLM 重试等场景）。
@@ -422,8 +483,36 @@ async def _stream_chat(
                 _ask_user_options = event.get("options", [])
                 _ask_user_questions = event.get("questions", [])
 
-            # Always call _sse to accumulate _full_reply regardless of connection
+            # 准备事件数据用于广播
             event_data = {k: v for k, v in event.items() if k != "type"}
+            
+            # 根据事件类型更新对话状态
+            if event_type == "thinking_start":
+                asyncio.create_task(_update_status("thinking"))
+            elif event_type == "tool_call_start":
+                current_tool = event_data.get("tool", "")
+                asyncio.create_task(_update_status("tool_executing", {"tool_name": current_tool}))
+            elif event_type == "tool_call_end":
+                current_tool = ""
+            elif event_type == "text_delta" and conversation_status != "text_generating":
+                asyncio.create_task(_update_status("text_generating"))
+            elif event_type == "plan_created":
+                total_steps = len(event_data.get("steps", []))
+                current_step = 0
+            elif event_type == "plan_step_updated":
+                current_step = event_data.get("step_index", current_step)
+                asyncio.create_task(_update_status(conversation_status, {"current_step": current_step, "total_steps": total_steps}))
+
+            # 实时广播关键事件给所有连接的客户端
+            if event_type in ["thinking_start", "thinking_delta", "thinking_end", 
+                           "text_delta", "tool_call_start", "tool_call_end",
+                           "plan_created", "plan_step_updated", "agent_switch", "agent_handoff"]:
+                try:
+                    asyncio.create_task(broadcast_handler(f"chat:{event_type}", event_data))
+                except Exception as e:
+                    logger.warning(f"[Chat API] 广播事件失败: {e}")
+
+            # Always call _sse to accumulate _full_reply regardless of connection
             sse_line = _sse(event_type, event_data)
 
             # Client disconnected — text is accumulated by _sse above, skip SSE output
@@ -634,7 +723,12 @@ async def _stream_chat(
             pass
 
         if not _client_disconnected and not _agent_errored:
+            # 对话完成，更新状态
+            asyncio.create_task(_update_status("completed"))
             yield _sse("done", {"usage": _usage_data})
+        elif _agent_errored:
+            # 对话出错，更新状态
+            asyncio.create_task(_update_status("error"))
 
     except Exception as e:
         logger.error(f"Chat stream error: {e}", exc_info=True)
@@ -656,6 +750,7 @@ async def _stream_chat(
                         _agent_task, _agent_done, _agent_queue, _sse,
                         session, session_manager, conversation_id,
                         _full_reply, _collected_artifacts, _save_done,
+                        client_id,
                     )
 
         # Drain remaining queue events to accumulate _full_reply for deferred save

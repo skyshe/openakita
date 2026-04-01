@@ -33,6 +33,7 @@ class SessionManager:
     - 会话的创建和获取
     - 会话过期清理
     - 会话持久化
+    - 会话更新事件广播
     """
 
     def __init__(
@@ -80,6 +81,9 @@ class SessionManager:
         # 可选：从外部存储（SQLite）加载 turns 的回调，用于崩溃恢复时回填
         # 签名: (safe_session_id: str) -> list[dict]  (每个 dict 含 role, content, timestamp)
         self._turn_loader = None
+        
+        # 会话更新事件广播回调
+        self._session_update_callback = None
 
         # 会话是否已从磁盘加载完毕（API 层用此判断 ready 语义）
         self._sessions_loaded = False
@@ -121,6 +125,29 @@ class SessionManager:
     def set_turn_loader(self, loader) -> None:
         """设置 turn_loader 回调（延迟绑定，Agent 初始化完成后调用）"""
         self._turn_loader = loader
+    
+    def set_session_update_callback(self, callback) -> None:
+        """设置会话更新事件广播回调。"""
+        self._session_update_callback = callback
+    
+    def _broadcast_session_update(self, session, update_type: str, extra_data: dict | None = None) -> None:
+        """广播会话更新事件。"""
+        if self._session_update_callback is None:
+            return
+        
+        try:
+            event_data = {
+                "session_id": session.id,
+                "session_key": session.session_key,
+                "update_type": update_type,
+                "timestamp": session.last_active.isoformat(),
+            }
+            if extra_data:
+                event_data.update(extra_data)
+            
+            self._session_update_callback("session:update", event_data)
+        except Exception as e:
+            logger.warning(f"[SessionManager] Failed to broadcast session update: {e}")
 
     def backfill_sessions_from_store(self) -> int:
         """用 turn_loader 回填所有 session 中可能缺失的消息（崩溃恢复）。
@@ -740,6 +767,14 @@ class SessionManager:
         session = self.get_session(channel, chat_id, user_id)
         session.add_message(role, content, **metadata)
         self.mark_dirty()  # 标记需要保存
+        
+        # 广播消息添加事件
+        self._broadcast_session_update(session, "message_added", {
+            "role": role,
+            "content_preview": (content[:100] + "..." if len(content) > 100 else content),
+            "has_metadata": bool(metadata),
+        })
+        
         return session
 
     def get_history(

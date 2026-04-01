@@ -130,13 +130,23 @@ async def ws_events(ws: WebSocket):
             "ts": time.time(),
         }))
 
-        # Keep connection alive; listen for client messages (ping/pong, etc.)
+        # Keep connection alive; listen for client messages (ping/pong, history request, etc.)
         while True:
             try:
                 msg = await asyncio.wait_for(ws.receive_text(), timeout=30.0)
                 # Handle ping
                 if msg == "ping":
                     await ws.send_text(json.dumps({"event": "pong", "ts": time.time()}))
+                else:
+                    # 尝试解析客户端消息，可能是历史请求
+                    try:
+                        client_msg = json.loads(msg)
+                        if client_msg.get("type") == "get_history" and "conversation_id" in client_msg:
+                            # 获取并发送对话历史
+                            conversation_id = client_msg["conversation_id"]
+                            await _send_conversation_history(ws, conversation_id, ws.app.state)
+                    except json.JSONDecodeError:
+                        pass
             except asyncio.TimeoutError:
                 # Send server-side ping to keep connection alive
                 try:
@@ -149,6 +159,35 @@ async def ws_events(ws: WebSocket):
         logger.debug("WebSocket error: %s", e)
     finally:
         await manager.disconnect(ws)
+
+
+async def _send_conversation_history(ws: WebSocket, conversation_id: str, app_state) -> None:
+    """发送指定对话的历史记录给客户端"""
+    try:
+        session_manager = getattr(app_state, "session_manager", None)
+        if not session_manager or not conversation_id:
+            return
+
+        session = session_manager.get_session(
+            channel="desktop",
+            chat_id=conversation_id,
+            user_id="desktop_user",
+            create_if_missing=False,
+        )
+        
+        if session and hasattr(session, "context"):
+            messages = list(session.context.messages) if hasattr(session.context, "messages") else []
+            history_data = {
+                "conversation_id": conversation_id,
+                "messages": messages,
+            }
+            await ws.send_text(json.dumps({
+                "event": "chat:history",
+                "data": history_data,
+                "ts": time.time(),
+            }))
+    except Exception as e:
+        logger.warning(f"[WebSocket] 发送对话历史失败: {e}")
 
 
 async def broadcast_event(event: str, data: Any = None) -> None:
